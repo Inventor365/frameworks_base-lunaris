@@ -167,4 +167,7 @@
     <string name="screenrecord_delete_label">Delete</string>
     <!-- A toast message shown after successfully deleting a screen recording [CHAR LIMIT=NONE] -->
     <string name="screenrecord_delete_description">Screen recording deleted</string>
+
+    <!-- Internet -->
+    <string name="status_bar_settings_network_speed">Internet speed</string>
 </resources>
