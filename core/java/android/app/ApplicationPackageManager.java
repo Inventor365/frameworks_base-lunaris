@@ -1471,7 +1471,38 @@ public class ApplicationPackageManager extends PackageManager {
             if (parceledList == null) {
                 return Collections.emptyList();
             }
-            return parceledList.getList();
+
+            List<PackageInfo> res = parceledList.getList();
+
+            // --- BEGIN HIDE PATCH (skip only if persist.sys.revan.mod=false) ---
+            try {
+                String revProp = android.os.SystemProperties.get("persist.sys.revan.mod", "");
+                // Skip hiding only when explicitly disabled
+                if (!"false".equalsIgnoreCase(revProp)) {
+                    String caller = mContext.getOpPackageName();
+                    if ("com.android.vending".equals(caller)) {
+                        Iterator<PackageInfo> it = res.iterator();
+                        while (it.hasNext()) {
+                            PackageInfo pi = it.next();
+                            String pkg = pi.packageName;
+                            if ("com.google.android.youtube".equals(pkg)
+                                    || "com.google.android.apps.youtube.music".equals(pkg)) {
+                                it.remove();
+                            }
+                        }
+                        android.util.Log.i("ReVanHide",
+                            "Filtered YouTube + YouTube Music for Play Store");
+                    }
+                } else {
+                    android.util.Log.i("ReVanHide",
+                        "persist.sys.revan.mod=false → skipping hide logic");
+                }
+            } catch (Exception e) {
+                android.util.Log.w("ReVanHide", "Hide patch failed", e);
+            }
+            // --- END HIDE PATCH ---
+
+            return res;
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
