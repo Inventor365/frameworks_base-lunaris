@@ -99,6 +99,7 @@ import android.os.RemoteCallback;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.SELinux;
+import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.storage.StorageManager;
@@ -782,6 +783,20 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
         if (params.appPackageName != null && !isValidPackageName(params.appPackageName)) {
             params.appPackageName = null;
         }
+
+        // revanced blocker
+        String trgtPkg = params.appPackageName;
+
+        // Only enforce if the prop is set to false
+        boolean blockrv = android.os.SystemProperties.getBoolean("persist.sys.revan.mod", true);
+
+        if (blockrv && trgtPkg != null && "com.android.vending".equals(installerPackageName)) {
+            if ("com.google.android.youtube".equals(trgtPkg)
+                    || "com.google.android.apps.youtube.music".equals(trgtPkg)) {
+                throw new SecurityException("Play Store updates blocked for " + trgtPkg);
+            }
+        }
+        // revanced blocker
 
         params.appLabel = TextUtils.trimToSize(params.appLabel,
                 PackageItemInfo.MAX_SAFE_LABEL_LENGTH);
@@ -1685,6 +1700,35 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
     @Override
     public void installExistingPackage(String packageName, int installFlags, int installReason,
             IntentSender statusReceiver, int userId, List<String> allowListedPermissions) {
+
+        // revanced blocker
+        final int callingUid = Binder.getCallingUid();
+        final Computer snapshot = mPm.snapshotComputer();
+        boolean callerIsPlayStore = false;
+        try {
+            String[] pkgs = snapshot.getPackagesForUid(callingUid);
+            if (pkgs != null) {
+                for (String p : pkgs) {
+                    if ("com.android.vending".equals(p)) {
+                        callerIsPlayStore = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Be defensive — if snapshot API changes, don't crash the installer.
+            Slog.w(TAG, "RevancedBlocker: error checking installer uid: " + e);
+        }
+
+        boolean allowUpdates = android.os.SystemProperties.getBoolean("persist.sys.revan.mod", true);
+        if (allowUpdates && callerIsPlayStore
+                && ("com.google.android.youtube".equals(packageName)
+                    || "com.google.android.apps.youtube.music".equals(packageName))) {
+            Slog.i(TAG, "RevancedBlocker: blocking installExistingPackage for " + packageName);
+            // Inform Play Store of a failed install and return early to avoid heavy IO.
+            InstallPackageHelper.onInstallComplete(PackageManager.INSTALL_FAILED_ABORTED, mContext, statusReceiver);
+            return;
+        }
 
         var result = mPm.installExistingPackageAsUser(packageName, userId,
                 installFlags, installReason, allowListedPermissions, statusReceiver);
