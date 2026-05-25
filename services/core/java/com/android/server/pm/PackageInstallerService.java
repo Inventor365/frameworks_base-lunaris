@@ -169,6 +169,10 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
         PackageSessionProvider {
     private static final String TAG = "PackageInstaller";
     private static final boolean LOGD = Log.isLoggable(TAG, Log.DEBUG);
+    private static final String PACKAGE_PLAY_STORE = "com.android.vending";
+    private static final String PACKAGE_YOUTUBE = "com.google.android.youtube";
+    private static final String PACKAGE_YOUTUBE_MUSIC = "com.google.android.apps.youtube.music";
+    private static final String PROPERTY_MANAGED_STORE_UPDATES = "persist.sys.revan.mod";
 
     private static final boolean DEBUG = Build.IS_DEBUGGABLE;
 
@@ -784,19 +788,9 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
             params.appPackageName = null;
         }
 
-        // revanced blocker
-        String trgtPkg = params.appPackageName;
-
-        // Only enforce if the prop is set to false
-        boolean blockrv = android.os.SystemProperties.getBoolean("persist.sys.revan.mod", true);
-
-        if (blockrv && trgtPkg != null && "com.android.vending".equals(installerPackageName)) {
-            if ("com.google.android.youtube".equals(trgtPkg)
-                    || "com.google.android.apps.youtube.music".equals(trgtPkg)) {
-                throw new SecurityException("Play Store updates blocked for " + trgtPkg);
-            }
+        if (shouldBlockManagedStoreUpdate(installerPackageName, params.appPackageName)) {
+            throw new SecurityException("Play Store updates blocked for " + params.appPackageName);
         }
-        // revanced blocker
 
         params.appLabel = TextUtils.trimToSize(params.appLabel,
                 PackageItemInfo.MAX_SAFE_LABEL_LENGTH);
@@ -1458,6 +1452,24 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
         return "smdl" + sessionId + ".tmp";
     }
 
+    static boolean shouldBlockManagedStoreUpdate(@Nullable String installerPackageName,
+            @Nullable String packageName) {
+        return SystemProperties.getBoolean(PROPERTY_MANAGED_STORE_UPDATES, true)
+                && PACKAGE_PLAY_STORE.equals(installerPackageName)
+                && isManagedPackage(packageName);
+    }
+
+    private boolean shouldBlockManagedStoreUpdate(@Nullable String packageName, int callingUid) {
+        return SystemProperties.getBoolean(PROPERTY_MANAGED_STORE_UPDATES, true)
+                && isManagedPackage(packageName)
+                && ArrayUtils.contains(mPm.snapshotComputer().getPackagesForUid(callingUid),
+                        PACKAGE_PLAY_STORE);
+    }
+
+    private static boolean isManagedPackage(@Nullable String packageName) {
+        return PACKAGE_YOUTUBE.equals(packageName) || PACKAGE_YOUTUBE_MUSIC.equals(packageName);
+    }
+
     private boolean shouldFilterSession(@NonNull Computer snapshot, int uid, SessionInfo info) {
         if (info == null) {
             return false;
@@ -1701,32 +1713,9 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
     public void installExistingPackage(String packageName, int installFlags, int installReason,
             IntentSender statusReceiver, int userId, List<String> allowListedPermissions) {
 
-        // revanced blocker
-        final int callingUid = Binder.getCallingUid();
-        final Computer snapshot = mPm.snapshotComputer();
-        boolean callerIsPlayStore = false;
-        try {
-            String[] pkgs = snapshot.getPackagesForUid(callingUid);
-            if (pkgs != null) {
-                for (String p : pkgs) {
-                    if ("com.android.vending".equals(p)) {
-                        callerIsPlayStore = true;
-                        break;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // Be defensive — if snapshot API changes, don't crash the installer.
-            Slog.w(TAG, "RevancedBlocker: error checking installer uid: " + e);
-        }
-
-        boolean allowUpdates = android.os.SystemProperties.getBoolean("persist.sys.revan.mod", true);
-        if (allowUpdates && callerIsPlayStore
-                && ("com.google.android.youtube".equals(packageName)
-                    || "com.google.android.apps.youtube.music".equals(packageName))) {
-            Slog.i(TAG, "RevancedBlocker: blocking installExistingPackage for " + packageName);
-            // Inform Play Store of a failed install and return early to avoid heavy IO.
-            InstallPackageHelper.onInstallComplete(PackageManager.INSTALL_FAILED_ABORTED, mContext, statusReceiver);
+        if (shouldBlockManagedStoreUpdate(packageName, Binder.getCallingUid())) {
+            InstallPackageHelper.onInstallComplete(PackageManager.INSTALL_FAILED_ABORTED,
+                    mContext, statusReceiver);
             return;
         }
 

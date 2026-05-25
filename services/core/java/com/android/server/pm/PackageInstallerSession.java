@@ -3025,22 +3025,35 @@ public class PackageInstallerSession extends IPackageInstallerSession.Stub {
                 for (PackageInstallerSession child : children) {
                     child.prepareInheritedFiles();
                     child.parseApk();
+                    child.enforceManagedStoreUpdateBlock();
                 }
             } else {
                 prepareInheritedFiles();
                 parseApk();
+                enforceManagedStoreUpdateBlock();
             }
         }  catch (PackageManagerException e) {
             final String completeMsg = ExceptionUtils.getCompleteMessage(e);
             final String errorMsg = PackageManager.installStatusToString(e.error, completeMsg);
             setSessionFailed(e.error, errorMsg);
             onSessionVerificationFailure(e.error, errorMsg, /* extras= */ null);
+            if (e.error == INSTALL_FAILED_ABORTED) {
+                return;
+            }
         }
         if (isVerificationServiceEnabled()) {
             performDeveloperVerification();
         } else {
             // No need to check with verifier. Proceed with the rest of the verification.
             resumeVerify();
+        }
+    }
+
+    private void enforceManagedStoreUpdateBlock() throws PackageManagerException {
+        if (PackageInstallerService.shouldBlockManagedStoreUpdate(getInstallerPackageName(),
+                getPackageName())) {
+            throw new PackageManagerException(INSTALL_FAILED_ABORTED,
+                    "Play Store updates blocked for " + getPackageName());
         }
     }
 
