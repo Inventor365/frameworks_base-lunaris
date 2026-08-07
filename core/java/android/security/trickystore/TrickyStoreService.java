@@ -47,6 +47,7 @@ public class TrickyStoreService {
 
     private final Set<String> mHackPackages = ConcurrentHashMap.newKeySet();
     private final Set<String> mGeneratePackages = ConcurrentHashMap.newKeySet();
+    private final Set<String> mSkipPackages = ConcurrentHashMap.newKeySet();
     private final Map<String, Mode> mPackageModes = new ConcurrentHashMap<>();
 
     private volatile Boolean mTeeBroken = null;
@@ -61,7 +62,7 @@ public class TrickyStoreService {
 
     /** @hide */
     public enum Mode {
-        AUTO, LEAF_HACK, GENERATE
+        AUTO, LEAF_HACK, GENERATE, SKIP
     }
 
     /** @hide */
@@ -129,6 +130,7 @@ public class TrickyStoreService {
         String content = fetchFromAms(am -> am.getSpoofTrickyStoreTarget());
         mHackPackages.clear();
         mGeneratePackages.clear();
+        mSkipPackages.clear();
         mPackageModes.clear();
 
         if (content == null || content.isEmpty()) {
@@ -143,7 +145,8 @@ public class TrickyStoreService {
                 parseTargetsText(trimmed);
             }
             Log.i(TAG, "Updated target packages: hack=" + mHackPackages +
-                  ", generate=" + mGeneratePackages + ", modes=" + mPackageModes);
+                  ", generate=" + mGeneratePackages + ", skip=" + mSkipPackages +
+                  ", modes=" + mPackageModes);
         } catch (Exception e) {
             Log.e(TAG, "Failed to parse target packages", e);
         }
@@ -164,6 +167,10 @@ public class TrickyStoreService {
                 String pkg = line.substring(0, line.length() - 1).trim();
                 mHackPackages.add(pkg);
                 mPackageModes.put(pkg, Mode.LEAF_HACK);
+            } else if (line.endsWith("-")) {
+                String pkg = line.substring(0, line.length() - 1).trim();
+                mSkipPackages.add(pkg);
+                mPackageModes.put(pkg, Mode.SKIP);
             } else {
                 mPackageModes.put(line, Mode.AUTO);
             }
@@ -198,6 +205,7 @@ public class TrickyStoreService {
                 mPackageModes.put(pkg, mode);
                 if (mode == Mode.LEAF_HACK) mHackPackages.add(pkg);
                 if (mode == Mode.GENERATE) mGeneratePackages.add(pkg);
+                if (mode == Mode.SKIP) mSkipPackages.add(pkg);
             }
             reader.endArray();
         }
@@ -467,6 +475,7 @@ public class TrickyStoreService {
         ensureTeeStatus();
         for (String pkg : packages) {
             Mode mode = mPackageModes.get(pkg);
+            if (mode == Mode.SKIP) continue;
             if (mode == Mode.LEAF_HACK) return true;
             if (mode == Mode.AUTO && !mTeeBroken) return true;
         }
@@ -479,6 +488,7 @@ public class TrickyStoreService {
         ensureTeeStatus();
         for (String pkg : packages) {
             Mode mode = mPackageModes.get(pkg);
+            if (mode == Mode.SKIP) continue;
             if (mode == Mode.GENERATE) return true;
             if (mode == Mode.AUTO && mTeeBroken) return true;
         }
