@@ -50,6 +50,20 @@
     <string name="keyguard_indication_turbo_power_time"><xliff:g id="percentage">%2$s</xliff:g> • Turbo Charging (<xliff:g id="charging_time_left" example="4 hours and 2 minutes">%1$s</xliff:g> until full)</string>
     <string name="keyguard_plugged_in_turbo_charging"><xliff:g id="percentage">%s</xliff:g> • Turbo Charging</string>
 
+    <!-- Indication on the keyguard that is shown when the device is charging slowly (< 2A) -->
+    <string name="keyguard_indication_charging_time_slowly"><xliff:g id="percentage">%2$s</xliff:g> • Charging Slowly • Full in <xliff:g id="charging_time_left" example="4 hr, 2 min">%1$s</xliff:g></string>
+    <string name="keyguard_plugged_in_charging_slowly"><xliff:g id="percentage">%s</xliff:g> • Charging Slowly</string>
+
+    <!-- Indication on the keyguard that is shown when the device is charging fast (2A - 8A) -->
+    <string name="keyguard_indication_charging_time_fast"><xliff:g id="percentage">%2$s</xliff:g> • Charging Fast maybe? • Full in <xliff:g id="charging_time_left" example="4 hr, 2 min">%1$s</xliff:g></string>
+    <string name="keyguard_plugged_in_charging_fast"><xliff:g id="percentage">%s</xliff:g> • Charging Fast maybe?</string>
+    <string name="keyguard_indication_fast_maybe_charging_time"><xliff:g id="percentage">%2$s</xliff:g> • Charging Fast maybe? • Full in <xliff:g id="charging_time_left" example="4 hr, 2 min">%1$s</xliff:g></string>
+    <string name="keyguard_plugged_in_fast_maybe_charging"><xliff:g id="percentage">%s</xliff:g> • Charging Fast maybe?</string>
+
+    <!-- Indication on the keyguard that is shown when the device is superfast charging (> 8A) -->
+    <string name="keyguard_indication_superfast_charging_time"><xliff:g id="percentage">%2$s</xliff:g> • Yuki\'s Superfast Charge • Full in <xliff:g id="charging_time_left" example="4 hr, 2 min">%1$s</xliff:g></string>
+    <string name="keyguard_plugged_in_superfast_charging"><xliff:g id="percentage">%s</xliff:g> • Yuki\'s Superfast Charge</string>
+
     <!-- Smartspace -->
     <string name="accessibility_next_alarm">Next alarm at %s</string>
     <string name="accessibility_smartspace_page">Page %1$d of %2$d</string>
