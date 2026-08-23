@@ -118,12 +118,27 @@ public class ChargingStatusProvider {
 
         final long chargingTimeRemaining = mBatteryState.getChargingTimeRemaining(mBatteryInfo);
         final boolean hasChargingTime = chargingTimeRemaining > 0;
-        if (mBatteryState.isPowerPluggedInWired()) {
+        float currentAmps = mBatteryState.getChargingCurrentAmps(mContext);
+        if (currentAmps > 0f) {
+            if (currentAmps > 8.0f) {
+                chargingId = hasChargingTime
+                        ? R.string.keyguard_indication_superfast_charging_time
+                        : R.string.keyguard_plugged_in_superfast_charging;
+            } else if (currentAmps >= 2.0f) {
+                chargingId = hasChargingTime
+                        ? R.string.keyguard_indication_fast_maybe_charging_time
+                        : R.string.keyguard_plugged_in_fast_maybe_charging;
+            } else {
+                chargingId = hasChargingTime
+                        ? R.string.keyguard_indication_charging_time_slowly
+                        : R.string.keyguard_plugged_in_charging_slowly;
+            }
+        } else if (mBatteryState.isPowerPluggedInWired()) {
             switch (mBatteryState.getChargingSpeed(mContext)) {
                 case BatteryStatus.CHARGING_FAST:
                     chargingId = hasChargingTime
-                            ? R.string.keyguard_indication_charging_time_fast
-                            : R.string.keyguard_plugged_in_charging_fast;
+                            ? R.string.keyguard_indication_fast_maybe_charging_time
+                            : R.string.keyguard_plugged_in_fast_maybe_charging;
                     break;
                 case BatteryStatus.CHARGING_SLOWLY:
                     chargingId = hasChargingTime
@@ -132,8 +147,8 @@ public class ChargingStatusProvider {
                     break;
                 default:
                     chargingId = hasChargingTime
-                            ? R.string.keyguard_indication_charging_time
-                            : R.string.keyguard_plugged_in;
+                            ? R.string.keyguard_indication_charging_time_slowly
+                            : R.string.keyguard_plugged_in_charging_slowly;
                     break;
             }
         } else if (mBatteryState.isPowerPluggedInWireless()) {
@@ -236,6 +251,23 @@ public class ChargingStatusProvider {
 
         public int getChargingSpeed(Context context) {
             return isValid() ? mBatteryStatus.getChargingSpeed(context) : 0;
+        }
+
+        public float getChargingCurrentAmps(Context context) {
+            if (!isValid()) return -1f;
+            float current = mBatteryStatus.maxChargingCurrent;
+            float wattage = mBatteryStatus.maxChargingWattage;
+            float voltage = mBatteryStatus.maxChargingVoltage;
+            int divider = context.getResources().getInteger(R.integer.config_currentInfoDivider);
+            if (divider <= 0) divider = 1000;
+            if (current > 0) {
+                return current / (float) divider / 1000f;
+            } else if (wattage > 0 && voltage > 0) {
+                float watts = wattage / (float) divider / 1000f;
+                float volts = voltage / 1000000f;
+                if (volts > 0) return watts / volts;
+            }
+            return -1f;
         }
 
         public boolean isPowerCharged() {
