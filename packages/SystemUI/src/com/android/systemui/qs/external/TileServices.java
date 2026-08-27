@@ -271,9 +271,17 @@ public class TileServices extends IQSService.Stub {
         if (customTile != null) {
             verifyCaller(customTile);
             customTile.onDialogShown();
-            mPanelInteractor.forceCollapsePanels();
+            if (!shouldKeepShadeOpen(customTile)) {
+                mPanelInteractor.forceCollapsePanels();
+            }
             Objects.requireNonNull(mServices.get(customTile)).setShowingDialog(true);
         }
+    }
+
+    private boolean shouldKeepShadeOpen(CustomTileInterface customTile) {
+        if (customTile == null || customTile.getComponent() == null) return false;
+        String className = customTile.getComponent().getClassName();
+        return className.endsWith(".PowerProfileTileService");
     }
 
     @Override
