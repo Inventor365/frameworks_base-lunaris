@@ -338,4 +338,35 @@
 
     <!-- Toast shown when the memory clean quick tile is tapped -->
     <string name="quick_settings_memory_cleaned_toast">Memory cleaned</string>
+
+    <!-- Power Profile QS Tile & Dialog -->
+    <string name="powerprofile_title">Power Profile</string>
+    <string name="powerprofile_default">Balanced</string>
+    <string name="powerprofile_performance">Performance</string>
+    <string name="powerprofile_gaming">Gaming Mode</string>
+    <string name="powerprofile_battery">Battery Saver</string>
+    <string name="powerprofile_auto">Auto</string>
+    <string name="powerprofile_unknown">Unknown</string>
+    <string name="powerprofile_summary">Choose a system performance profile</string>
+
+    <string name="powerprofile_default_desc">Balanced performance and battery life for everyday use.</string>
+    <string name="powerprofile_battery_desc">Lowers performance headroom and disables high touch sampling to stretch battery life.</string>
+    <string name="powerprofile_performance_desc">Raises CPU/GPU headroom and enables high touch sampling. Disables Battery Saver while active.</string>
+    <string name="powerprofile_gaming_desc">Maximum sustained performance and touch responsiveness for games. Disables Battery Saver while active.</string>
+    <string name="powerprofile_auto_desc">Automatically switches performance and thermal behavior based on what you\'re doing, and steps down further once the screen turns off. Recommended for most people.</string>
+
+    <string name="power_chip_htsr_on">HTSR: On</string>
+    <string name="power_chip_htsr_off">HTSR: Off</string>
+    <string name="power_htsr_apply_failed">Couldn\'t change high touch sample rate</string>
+    <string name="power_profile_apply_failed">Couldn\'t apply power profile</string>
+    <string name="power_tile_disabled_toast">Power Profile is turned off in Settings</string>
+    <string name="power_tile_disabled_subtitle">Disabled</string>
+
+    <string name="perf_mode_title">Performance Mode</string>
+    <string name="perf_mode_notification">Performance mode is active. Tap to open settings.</string>
+    <string name="gaming_mode_notification">Gaming mode is active. Tap to open settings.</string>
+    <string name="balanced_mode_notification">Balanced mode is active. Tap to open settings.</string>
+    <string name="battery_mode_notification">Battery Saver mode is active. Tap to open settings.</string>
+    <string name="auto_mode_notification">Auto mode is active. Tap to open settings.</string>
+    <string name="done_button">Done</string>
 </resources>
