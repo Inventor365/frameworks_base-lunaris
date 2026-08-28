@@ -425,22 +425,6 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
         }
 
         mExpandableClicked = expandable;
-
-        if (mComponent != null && "org.lineageos.settings.power.PowerProfileTileService".equals(mComponent.getClassName())) {
-            mUiHandler.post(() -> {
-                org.lineageos.settings.power.PowerProfileDialog dialog = new org.lineageos.settings.power.PowerProfileDialog(mUserContext);
-                if (expandable != null) {
-                    com.android.systemui.animation.DialogTransitionAnimator.Controller controller = expandable.dialogTransitionController(
-                            new com.android.systemui.animation.DialogCuj(com.android.internal.jank.InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN, "power_profile"));
-                    if (controller != null && mTileServices.getDialogTransitionAnimator() != null) {
-                        mTileServices.getDialogTransitionAnimator().show(dialog, controller);
-                        return;
-                    }
-                }
-                dialog.show();
-            });
-            return;
-        }
         try {
             if (DEBUG) Log.d(TAG, "Adding token");
             mWindowManager.addWindowToken(mToken, TYPE_QS_DIALOG,

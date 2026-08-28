@@ -32,7 +32,6 @@ import com.android.systemui.qs.tiles.FPSInfoTile
 import com.android.systemui.qs.tiles.HeadsUpTile
 import com.android.systemui.qs.tiles.LocaleTile
 import com.android.systemui.qs.tiles.OnTheGoTile
-import com.android.systemui.qs.tiles.PowerProfileTile
 import com.android.systemui.qs.tiles.PowerShareTile
 import com.android.systemui.qs.tiles.PreferredNetworkTile
 import com.android.systemui.qs.tiles.ProfilesTile
@@ -143,12 +142,6 @@ interface LineageModule {
     @IntoMap
     @StringKey(PreferredNetworkTile.TILE_SPEC)
     fun bindPreferredNetworkTile(preferredNetworkTile: PreferredNetworkTile): QSTileImpl<*>
-
-    /** Inject PowerProfileTile into tileMap in QSModule */
-    @Binds
-    @IntoMap
-    @StringKey(PowerProfileTile.TILE_SPEC)
-    fun bindPowerProfileTile(powerProfileTile: PowerProfileTile): QSTileImpl<*>
 
     /** Inject ProfilesTile into tileMap in QSModule */
     @Binds
@@ -446,21 +439,6 @@ interface LineageModule {
                     QSTileUIConfig.Resource(
                         iconRes = R.drawable.ic_qs_profiles,
                         labelRes = R.string.quick_settings_profiles_label
-                    ),
-                instanceId = uiEventLogger.getNewInstanceId(),
-                category = TileCategory.UTILITIES,
-            )
-
-        @Provides
-        @IntoMap
-        @StringKey(PowerProfileTile.TILE_SPEC)
-        fun providePowerProfileTileConfig(uiEventLogger: QsEventLogger): QSTileConfig =
-            QSTileConfig(
-                tileSpec = TileSpec.create(PowerProfileTile.TILE_SPEC),
-                uiConfig =
-                    QSTileUIConfig.Resource(
-                        iconRes = R.drawable.ic_power_default,
-                        labelRes = R.string.powerprofile_title
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
                 category = TileCategory.UTILITIES,
