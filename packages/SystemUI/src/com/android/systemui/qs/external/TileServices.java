@@ -83,6 +83,7 @@ public class TileServices extends IQSService.Stub {
     private final TileLifecycleManager.Factory mTileLifecycleManagerFactory;
     private final CustomTileAddedRepository mCustomTileAddedRepository;
     private final DelayableExecutor mBackgroundExecutor;
+    private final com.android.systemui.animation.DialogTransitionAnimator mDialogTransitionAnimator;
 
     private int mMaxBound = DEFAULT_MAX_BOUND;
 
@@ -98,7 +99,8 @@ public class TileServices extends IQSService.Stub {
             PanelInteractor panelInteractor,
             TileLifecycleManager.Factory tileLifecycleManagerFactory,
             CustomTileAddedRepository customTileAddedRepository,
-            @Background DelayableExecutor backgroundExecutor) {
+            @Background DelayableExecutor backgroundExecutor,
+            com.android.systemui.animation.DialogTransitionAnimator dialogTransitionAnimator) {
         mHost = host;
         mKeyguardStateController = keyguardStateController;
         mContext = mHost.getContext();
@@ -113,6 +115,11 @@ public class TileServices extends IQSService.Stub {
         mTileLifecycleManagerFactory = tileLifecycleManagerFactory;
         mCustomTileAddedRepository = customTileAddedRepository;
         mBackgroundExecutor = backgroundExecutor;
+        mDialogTransitionAnimator = dialogTransitionAnimator;
+    }
+
+    public com.android.systemui.animation.DialogTransitionAnimator getDialogTransitionAnimator() {
+        return mDialogTransitionAnimator;
     }
 
     public Context getContext() {
