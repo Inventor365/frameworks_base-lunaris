@@ -617,6 +617,14 @@
         <item name="android:buttonBarButtonStyle">@style/Widget.Dialog.Button.Large</item>
     </style>
 
+    <style name="Theme.PowerProfile.Dialog" parent="@style/Theme.SystemUI.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.6</item>
+        <item name="android:alertDialogStyle">@style/AlertDialogStyle</item>
+    </style>
+
     <style name="Theme.SystemUI.BottomSheet" parent="Theme.SystemUI.Dialog">
         <!-- default dialog background has insets -->
         <item name="android:windowBackground">@android:color/transparent</item>
