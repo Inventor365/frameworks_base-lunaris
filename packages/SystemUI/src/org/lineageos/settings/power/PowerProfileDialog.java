@@ -72,7 +72,7 @@ public class PowerProfileDialog extends SystemUIDialog {
     };
 
     public PowerProfileDialog(@NonNull Context context) {
-        super(context);
+        super(context, R.style.Theme_PowerProfile_Dialog);
         mContext = context;
         Log.d(TAG, "PowerProfileDialog constructed in SystemUI");
     }
