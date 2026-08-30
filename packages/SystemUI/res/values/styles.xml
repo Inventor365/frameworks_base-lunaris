@@ -625,6 +625,13 @@
         <item name="android:alertDialogStyle">@style/AlertDialogStyle</item>
     </style>
 
+    <style name="PowerProfileDialogButton" parent="@android:style/Widget.DeviceDefault.Button">
+        <item name="android:background">@drawable/power_profile_htsr_bg_active</item>
+        <item name="android:textColor">@androidprv:color/materialColorOnPrimaryContainer</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
     <style name="Theme.SystemUI.BottomSheet" parent="Theme.SystemUI.Dialog">
         <!-- default dialog background has insets -->
         <item name="android:windowBackground">@android:color/transparent</item>
