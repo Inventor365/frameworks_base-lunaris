@@ -84,7 +84,6 @@ public class PowerProfileDialog extends SystemUIDialog {
 
         Window window = getWindow();
         if (window != null) {
-            window.requestFeature(Window.FEATURE_NO_TITLE);
             window.addPrivateFlags(WindowManager.LayoutParams.SYSTEM_FLAG_SHOW_FOR_ALL_USERS);
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
             window.setGravity(Gravity.CENTER);
