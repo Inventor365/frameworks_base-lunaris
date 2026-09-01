@@ -184,7 +184,7 @@ interface LineageModule {
     @Binds
     @IntoMap
     @StringKey(SmartPixelTile.TILE_SPEC)
-    abstract fun bindSmartPixelTile(tile: SmartPixelTile): QSTileImpl<*>
+    fun bindSmartPixelTile(smartPixelTile: SmartPixelTile): QSTileImpl<*>
 
     /** Inject SoundTile into tileMap in QSModule */
     @Binds
