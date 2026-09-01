@@ -16,19 +16,16 @@
 
 package com.android.systemui.smartpixel.ui
 
+import android.content.ComponentName
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
-import android.os.UserHandle
+import android.provider.Settings
 import android.service.quicksettings.Tile
-import com.google.android.material.materialswitch.MaterialSwitch
-import com.android.internal.jank.InteractionJankMonitor
+import androidx.annotation.Nullable
 import com.android.internal.logging.MetricsLogger
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent
-import com.android.systemui.animation.DialogCuj
-import com.android.systemui.animation.DialogTransitionAnimator
 import com.android.systemui.animation.Expandable
-import com.android.systemui.smartpixel.domain.SmartPixelSettings
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.plugins.ActivityStarter
@@ -37,15 +34,14 @@ import com.android.systemui.plugins.qs.QSTile.BooleanState
 import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.qs.QSHost
 import com.android.systemui.qs.QsEventLogger
+import com.android.systemui.qs.UserSettingObserver
 import com.android.systemui.qs.logging.QSLogger
 import com.android.systemui.qs.tileimpl.QSTileImpl
 import com.android.systemui.res.R
-import com.android.systemui.statusbar.phone.SystemUIDialog
-import com.android.systemui.statusbar.policy.KeyguardStateController
+import com.android.systemui.settings.UserTracker
 import com.android.systemui.util.settings.SecureSettings
-import java.util.concurrent.Executor
+import com.google.android.material.materialswitch.MaterialSwitch
 import javax.inject.Inject
-import javax.inject.Provider
 
 class SmartPixelTile @Inject constructor(
     host: QSHost,
@@ -58,17 +54,44 @@ class SmartPixelTile @Inject constructor(
     activityStarter: ActivityStarter,
     qsLogger: QSLogger,
     private val secureSettings: SecureSettings,
-    private val keyguardStateController: KeyguardStateController,
-    private val dialogTransitionAnimator: DialogTransitionAnimator,
-    private val dialogDelegateProvider: Provider<SmartPixelDialogDelegate>,
-    @Main private val mainExecutor: Executor,
+    userTracker: UserTracker,
 ) : QSTileImpl<BooleanState>(
-    host, uiEventLogger, backgroundLooper, mainHandler, falsingManager,
-    metricsLogger, statusBarStateController, activityStarter, qsLogger,
+    host,
+    uiEventLogger,
+    backgroundLooper,
+    mainHandler,
+    falsingManager,
+    metricsLogger,
+    statusBarStateController,
+    activityStarter,
+    qsLogger,
 ) {
     companion object {
         const val TILE_SPEC = "smart_pixels"
-        private const val INTERACTION_JANK_TAG = "smart_pixels"
+        private val SMART_PIXELS_SETTINGS =
+            Intent("android.settings.SMART_PIXELS_SETTINGS").setComponent(
+                ComponentName(
+                    "com.android.settings",
+                    "com.android.settings.Settings\$SmartPixelsActivity",
+                )
+            )
+    }
+
+    private val setting =
+        object : UserSettingObserver(
+            secureSettings,
+            mHandler,
+            Settings.Secure.SMART_PIXEL_FILTER_ENABLED,
+            userTracker.userId,
+        ) {
+            override fun handleValueChanged(value: Int, observedChange: Boolean) {
+                handleRefreshState(value)
+            }
+        }
+
+    override fun handleDestroy() {
+        super.handleDestroy()
+        setting.isListening = false
     }
 
     override fun newTileState(): BooleanState {
@@ -77,60 +100,31 @@ class SmartPixelTile @Inject constructor(
         return state
     }
 
+    override fun handleSetListening(listening: Boolean) {
+        super.handleSetListening(listening)
+        setting.isListening = listening
+    }
+
+    override fun handleUserSwitch(newUserId: Int) {
+        setting.userId = newUserId
+        handleRefreshState(setting.value)
+    }
+
     override fun handleClick(expandable: Expandable?) {
         val newState = !mState.value
-        secureSettings.putIntForUser(
-            SmartPixelSettings.KEY_ENABLED,
-            if (newState) 1 else 0,
-            UserHandle.USER_CURRENT,
-        )
-        refreshState(newState)
+        setting.value = if (newState) 1 else 0
     }
 
-    override fun handleLongClick(expandable: Expandable?) {
-        val animateFromExpandable = expandable != null && !keyguardStateController.isShowing
-
-        val runnable = Runnable {
-            val dialog: SystemUIDialog = dialogDelegateProvider.get().createDialog()
-            if (animateFromExpandable) {
-                val controller = expandable?.dialogTransitionController(
-                    DialogCuj(
-                        InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN,
-                        INTERACTION_JANK_TAG,
-                    )
-                )
-                controller?.let { dialogTransitionAnimator.show(dialog, it) } ?: dialog.show()
-            } else {
-                dialog.show()
-            }
-        }
-
-        mainExecutor.execute {
-            mActivityStarter.executeRunnableDismissingKeyguard(
-                runnable,
-                null,
-                true,
-                true,
-                false,
-            )
-        }
-    }
-
-    override fun getLongClickIntent(): Intent? = null
+    override fun getLongClickIntent(): Intent = SMART_PIXELS_SETTINGS
 
     override fun getTileLabel(): CharSequence =
         mContext.getString(R.string.quick_settings_smart_pixels_label)
 
     override fun handleUpdateState(state: BooleanState, arg: Any?) {
-        val enabled = if (arg is Boolean) {
-            arg
-        } else {
-            secureSettings.getIntForUser(
-                SmartPixelSettings.KEY_ENABLED, 0, UserHandle.USER_CURRENT,
-            ) == 1
-        }
+        val value = if (arg is Int) arg else setting.value
+        val enabled = value != 0
         state.value = enabled
-        state.label = mContext.getString(R.string.quick_settings_smart_pixels_label)
+        state.label = getTileLabel()
         state.secondaryLabel = mContext.getString(
             if (enabled) R.string.quick_settings_smart_pixels_on
             else R.string.quick_settings_smart_pixels_off,
