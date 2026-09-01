@@ -3,7 +3,7 @@
      Copyright (C) 2026 The LineageOS Project
      SPDX-License-Identifier: Apache-2.0
 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<com.android.systemui.animation.view.LaunchableLinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:androidprv="http://schemas.android.com/apk/prv/res/android"
     android:id="@+id/power_profile_dialog_root"
     android:layout_width="match_parent"
@@ -110,4 +110,4 @@
 
     </RelativeLayout>
 
-</LinearLayout>
+</com.android.systemui.animation.view.LaunchableLinearLayout>
