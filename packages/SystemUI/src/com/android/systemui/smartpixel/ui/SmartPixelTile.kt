@@ -91,7 +91,7 @@ class SmartPixelTile @Inject constructor(
 
     override fun handleDestroy() {
         super.handleDestroy()
-        setting.isListening = false
+        setting.setListening(false)
     }
 
     override fun newTileState(): BooleanState {
@@ -102,17 +102,17 @@ class SmartPixelTile @Inject constructor(
 
     override fun handleSetListening(listening: Boolean) {
         super.handleSetListening(listening)
-        setting.isListening = listening
+        setting.setListening(listening)
     }
 
     override fun handleUserSwitch(newUserId: Int) {
-        setting.userId = newUserId
-        handleRefreshState(setting.value)
+        setting.setUserId(newUserId)
+        handleRefreshState(setting.getValue())
     }
 
     override fun handleClick(expandable: Expandable?) {
         val newState = !mState.value
-        setting.value = if (newState) 1 else 0
+        setting.setValue(if (newState) 1 else 0)
     }
 
     override fun getLongClickIntent(): Intent = SMART_PIXELS_SETTINGS
@@ -121,7 +121,7 @@ class SmartPixelTile @Inject constructor(
         mContext.getString(R.string.quick_settings_smart_pixels_label)
 
     override fun handleUpdateState(state: BooleanState, arg: Any?) {
-        val value = if (arg is Int) arg else setting.value
+        val value = if (arg is Int) arg else setting.getValue()
         val enabled = value != 0
         state.value = enabled
         state.label = getTileLabel()
