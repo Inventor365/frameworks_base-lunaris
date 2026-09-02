@@ -72,9 +72,14 @@ public class PowerProfileDialog extends SystemUIDialog {
     };
 
     public PowerProfileDialog(@NonNull Context context) {
-        super(context, R.style.Theme_PowerProfile_Dialog);
+        super(context, R.style.Theme_PowerProfile_Dialog, DEFAULT_DISMISS_ON_DEVICE_LOCK,
+                com.android.systemui.Dependency.get(com.android.systemui.statusbar.phone.SystemUIDialogManager.class),
+                com.android.systemui.Dependency.get(com.android.systemui.broadcast.BroadcastDispatcher.class),
+                com.android.systemui.Dependency.get(com.android.systemui.animation.DialogTransitionAnimator.class),
+                new com.android.systemui.statusbar.phone.DialogDelegate<SystemUIDialog>() {},
+                /* shouldAcsdDismissDialog= */ false);
         mContext = context;
-        Log.d(TAG, "PowerProfileDialog constructed in SystemUI");
+        Log.d(TAG, "PowerProfileDialog constructed in SystemUI (shouldAcsdDismissDialog = false)");
     }
 
     @Override
