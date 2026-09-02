@@ -10,6 +10,7 @@
     android:layout_height="wrap_content"
     android:layout_gravity="center"
     android:orientation="vertical"
+    android:background="@drawable/power_profile_dialog_bg"
     android:paddingStart="16dp"
     android:paddingEnd="16dp"
     android:paddingTop="20dp"
