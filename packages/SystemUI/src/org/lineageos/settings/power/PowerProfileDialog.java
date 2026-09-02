@@ -84,20 +84,19 @@ public class PowerProfileDialog extends SystemUIDialog {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        Log.d(TAG, "onCreate");
+
+        View mDialogView = LayoutInflater.from(getContext()).inflate(R.layout.power_profile_dialog_layout, null);
+        
         Window window = getWindow();
         if (window != null) {
             window.addPrivateFlags(WindowManager.LayoutParams.SYSTEM_FLAG_SHOW_FOR_ALL_USERS);
             window.setGravity(Gravity.CENTER);
-            window.setBackgroundDrawableResource(R.drawable.power_profile_dialog_bg);
-        }
-
-        View mDialogView = LayoutInflater.from(getContext()).inflate(R.layout.power_profile_dialog_layout, null);
-        if (window != null) {
+            // Make the window background transparent - the dialog content root has its own background
+            window.setBackgroundDrawableResource(android.R.color.transparent);
             window.setContentView(mDialogView);
         }
-
-        super.onCreate(savedInstanceState);
-        Log.d(TAG, "onCreate");
 
         setCanceledOnTouchOutside(true);
         mProfilesContainer = findViewById(R.id.profiles_container);
