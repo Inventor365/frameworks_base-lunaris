@@ -28,6 +28,7 @@ import android.hardware.display.DisplayManager;
 import android.os.BatteryManager;
 import android.os.PowerManager;
 import android.os.SystemProperties;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Display;
@@ -84,6 +85,9 @@ public final class PowerProfileUtils {
 
     public static final String ACTION_PROFILE_CHANGED =
             "org.lineageos.settings.power.ACTION_PROFILE_CHANGED";
+    public static final String POWER_PROFILE_SETTING = "power_profile";
+    public static final String EXTRA_PROFILE = "org.lineageos.settings.power.extra.PROFILE";
+    public static final String EXTRA_FROM_SYSTEMUI = "org.lineageos.settings.power.extra.FROM_SYSTEMUI";
 
     private static final String CHARGING_BOOST_SCONFIG_VALUE = "27";
     public static final int PERFORMANCE_NOTIFICATION_ID = 1001;
@@ -219,25 +223,39 @@ public final class PowerProfileUtils {
         }
 
         saveProfile(context, profile);
-        context.sendBroadcast(new Intent(ACTION_PROFILE_CHANGED));
+
+        Intent intent = new Intent(ACTION_PROFILE_CHANGED);
+        intent.putExtra(EXTRA_PROFILE, profile.getValue());
+        intent.putExtra("profile", profile.getValue());
+        intent.putExtra(EXTRA_FROM_SYSTEMUI, true);
+        intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        try {
+            context.sendBroadcastAsUser(intent, UserHandle.ALL);
+        } catch (Exception e) {
+            context.sendBroadcast(intent);
+        }
 
         return success;
     }
 
     public static PowerProfile getCurrentProfile(Context context) {
-        if (getSavedProfile(context) == PowerProfile.AUTO) {
+        PowerProfile saved = getSavedProfile(context);
+        if (saved == PowerProfile.AUTO) {
             return PowerProfile.AUTO;
         }
         String value = readOneLine(SCONFIG_NODE);
-        if (value == null) return PowerProfile.UNKNOWN;
+        if (value == null) {
+            return saved != PowerProfile.UNKNOWN ? saved : PowerProfile.DEFAULT;
+        }
         String trimmed = value.trim();
         if (CHARGING_BOOST_SCONFIG_VALUE.equals(trimmed)) {
-            return getSavedProfile(context);
+            return saved;
         }
         try {
-            return PowerProfile.fromValue(Integer.parseInt(trimmed));
+            PowerProfile profile = PowerProfile.fromValue(Integer.parseInt(trimmed));
+            return (profile != PowerProfile.UNKNOWN) ? profile : saved;
         } catch (NumberFormatException e) {
-            return PowerProfile.UNKNOWN;
+            return saved != PowerProfile.UNKNOWN ? saved : PowerProfile.DEFAULT;
         }
     }
 
@@ -253,6 +271,11 @@ public final class PowerProfileUtils {
     }
 
     public static boolean isHtsrActive(Context context) {
+        try {
+            int val = Settings.System.getInt(context.getContentResolver(), "htsr_state", -1);
+            if (val != -1) return val == 1;
+        } catch (Exception ignored) {
+        }
         return context.getSharedPreferences(SHAREDHTSR, Context.MODE_PRIVATE)
                 .getBoolean(HTSR_STATE, false);
     }
@@ -299,6 +322,11 @@ public final class PowerProfileUtils {
         htsrPrefs.edit().putBoolean(HTSR_STATE, enable).apply();
 
         try {
+            Settings.System.putInt(context.getContentResolver(), "htsr_state", enable ? 1 : 0);
+        } catch (Exception ignored) {
+        }
+
+        try {
             Intent serviceIntent = new Intent();
             serviceIntent.setClassName("org.lineageos.settings", "org.lineageos.settings.touchsampling.TouchSamplingService");
             if (enable) {
@@ -329,7 +357,9 @@ public final class PowerProfileUtils {
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         if (manager == null) return;
 
-        Intent intent = new Intent(Settings.ACTION_SETTINGS);
+        Intent intent = new Intent();
+        intent.setClassName("org.lineageos.settings", "org.lineageos.settings.power.PowerProfileActivity");
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
@@ -460,10 +490,25 @@ public final class PowerProfileUtils {
     }
 
     public static void saveProfile(Context context, PowerProfile profile) {
+        try {
+            Settings.System.putInt(context.getContentResolver(), POWER_PROFILE_SETTING, profile.getValue());
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to save profile to Settings.System", e);
+        }
         prefs(context).edit().putInt(POWER_PROFILE_PREF_KEY, profile.getValue()).apply();
     }
 
     public static PowerProfile getSavedProfile(Context context) {
+        try {
+            int value = Settings.System.getInt(context.getContentResolver(), POWER_PROFILE_SETTING, Integer.MIN_VALUE);
+            if (value != Integer.MIN_VALUE) {
+                PowerProfile profile = PowerProfile.fromValue(value);
+                if (profile != PowerProfile.UNKNOWN) {
+                    return profile;
+                }
+            }
+        } catch (Exception ignored) {
+        }
         int value = prefs(context).getInt(POWER_PROFILE_PREF_KEY, PowerProfile.AUTO.getValue());
         return PowerProfile.fromValue(value);
     }
@@ -472,6 +517,17 @@ public final class PowerProfileUtils {
         if (profile != PowerProfile.BATTERY) {
             prefs(context).edit().putInt(PREV_POWER_PROFILE_PREF_KEY, profile.getValue()).apply();
         }
+    }
+
+    public static boolean isFirstBoot(Context context) {
+        try {
+            int value = Settings.System.getInt(context.getContentResolver(), POWER_PROFILE_SETTING, Integer.MIN_VALUE);
+            if (value != Integer.MIN_VALUE) {
+                return false;
+            }
+        } catch (Exception ignored) {
+        }
+        return !prefs(context).contains(POWER_PROFILE_PREF_KEY);
     }
 
     private static SharedPreferences prefs(Context context) {

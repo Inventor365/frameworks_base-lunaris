@@ -21,7 +21,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
+import android.database.ContentObserver;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -67,6 +71,14 @@ public class PowerProfileDialog extends SystemUIDialog {
         @Override
         public void onReceive(Context context, Intent intent) {
             Log.d(TAG, "Broadcast received in SystemUI: " + intent.getAction());
+            refreshProfiles();
+        }
+    };
+
+    private final ContentObserver mProfileObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override
+        public void onChange(boolean selfChange) {
+            Log.d(TAG, "Settings.System power profile changed -> refreshing dialog");
             refreshProfiles();
         }
     };
@@ -126,9 +138,17 @@ public class PowerProfileDialog extends SystemUIDialog {
             mContext.registerReceiver(
                     mProfileReceiver,
                     filter,
-                    Context.RECEIVER_NOT_EXPORTED);
+                    Context.RECEIVER_EXPORTED);
         } catch (Exception e) {
             Log.e(TAG, "Failed to register profile receiver in SystemUI", e);
+        }
+        try {
+            mContext.getContentResolver().registerContentObserver(
+                    Settings.System.getUriFor(PowerProfileUtils.POWER_PROFILE_SETTING),
+                    false,
+                    mProfileObserver);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to register profile content observer in SystemUI", e);
         }
         refreshProfiles();
     }
@@ -141,6 +161,11 @@ public class PowerProfileDialog extends SystemUIDialog {
             mContext.unregisterReceiver(mProfileReceiver);
         } catch (Exception e) {
             Log.d(TAG, "Error unregistering receiver in SystemUI", e);
+        }
+        try {
+            mContext.getContentResolver().unregisterContentObserver(mProfileObserver);
+        } catch (Exception e) {
+            Log.d(TAG, "Error unregistering content observer in SystemUI", e);
         }
     }
 
