@@ -19,6 +19,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
@@ -35,12 +36,6 @@ import android.view.Display;
 
 import androidx.preference.PreferenceManager;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
-
 import com.android.systemui.res.R;
 
 /**
@@ -49,11 +44,6 @@ import com.android.systemui.res.R;
 public final class PowerProfileUtils {
     private static final String TAG = "PowerProfileUtils";
     private static final String NOTIFICATION_CHANNEL_ID = "PowerProfileTileService";
-
-    // Sysfs / sysprop surfaces
-    public static final String SCONFIG_NODE = "/sys/class/thermal/thermal_message/sconfig";
-    public static final String SYS_PERF_PROP = "sys.perf_mode_active";
-    public static final String HTSR_NODE = "/sys/class/touch/touch_dev/click_touch_dialog";
 
     // SharedPreferences keys
     public static final String POWER_ENABLED_KEY = "power_enabled";
@@ -85,9 +75,14 @@ public final class PowerProfileUtils {
 
     public static final String ACTION_PROFILE_CHANGED =
             "org.lineageos.settings.power.ACTION_PROFILE_CHANGED";
+    public static final String ACTION_SET_POWER_PROFILE =
+            "org.lineageos.settings.power.ACTION_SET_POWER_PROFILE";
+    public static final String ACTION_SET_HTSR =
+            "org.lineageos.settings.power.ACTION_SET_HTSR";
     public static final String POWER_PROFILE_SETTING = "power_profile";
     public static final String EXTRA_PROFILE = "org.lineageos.settings.power.extra.PROFILE";
     public static final String EXTRA_FROM_SYSTEMUI = "org.lineageos.settings.power.extra.FROM_SYSTEMUI";
+    public static final String EXTRA_HTSR_STATE = "org.lineageos.settings.power.extra.HTSR_STATE";
 
     private static final String CHARGING_BOOST_SCONFIG_VALUE = "27";
     public static final int PERFORMANCE_NOTIFICATION_ID = 1001;
@@ -155,76 +150,12 @@ public final class PowerProfileUtils {
     private PowerProfileUtils() {
     }
 
-    private static void startAutoProfileService(Context context) {
-        try {
-            Intent serviceIntent = new Intent();
-            serviceIntent.setClassName("org.lineageos.settings", "org.lineageos.settings.power.AutoProfileService");
-            context.startForegroundService(serviceIntent);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed starting AutoProfileService", e);
-        }
-    }
-
-    private static void stopAutoProfileService(Context context) {
-        try {
-            Intent serviceIntent = new Intent();
-            serviceIntent.setClassName("org.lineageos.settings", "org.lineageos.settings.power.AutoProfileService");
-            context.stopService(serviceIntent);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed stopping AutoProfileService", e);
-        }
-    }
-
     public static boolean applyProfile(Context context, PowerProfile profile) {
-        PowerProfile outgoing = getCurrentProfile(context);
-        if (outgoing != PowerProfile.BATTERY) {
-            savePreviousProfile(context, outgoing);
-        }
-
-        if (outgoing == PowerProfile.AUTO && profile != PowerProfile.AUTO) {
-            stopAutoProfileService(context);
-        }
-
-        boolean success;
-        if (profile == PowerProfile.AUTO) {
-            startAutoProfileService(context);
-            success = true;
-        } else {
-            success = writeProfile(profile);
-            if (!success) {
-                Log.e(TAG, "Failed to write power profile: " + profile);
-            }
-        }
-
-        if (profile != PowerProfile.AUTO) {
-            boolean htsrEnabled = profile == PowerProfile.PERFORMANCE || profile == PowerProfile.GAMING;
-            updateTouchSampling(context, htsrEnabled);
-        }
-
-        boolean isCharging = isCharging(context);
-        if (profile == PowerProfile.BATTERY) {
-            if (isBatteryProfileSaverEnabled(context)) {
-                setBatterySaver(context, !isCharging);
-            }
-        } else if (isAutoBatterySyncEnabled(context)) {
-            setBatterySaver(context, false);
-        }
-
-        if (profile == PowerProfile.BATTERY) {
-            applyBatteryProfileRefreshRate(context);
-        } else {
-            restoreRefreshRateOverride(context);
-        }
-
-        if (isPowerEnabled(context) && profile != PowerProfile.UNKNOWN) {
-            showPerformanceNotification(context, profile);
-        } else {
-            cancelPerformanceNotification(context);
-        }
-
         saveProfile(context, profile);
 
-        Intent intent = new Intent(ACTION_PROFILE_CHANGED);
+        Intent intent = new Intent(ACTION_SET_POWER_PROFILE);
+        intent.setComponent(new ComponentName("org.lineageos.settings",
+                "org.lineageos.settings.power.PowerProfileReceiver"));
         intent.putExtra(EXTRA_PROFILE, profile.getValue());
         intent.putExtra("profile", profile.getValue());
         intent.putExtra(EXTRA_FROM_SYSTEMUI, true);
@@ -232,42 +163,20 @@ public final class PowerProfileUtils {
         try {
             context.sendBroadcastAsUser(intent, UserHandle.ALL);
         } catch (Exception e) {
-            context.sendBroadcast(intent);
+            try {
+                context.sendBroadcast(intent);
+            } catch (Exception ex) {
+                Log.e(TAG, "Failed to send profile intent from SystemUI", ex);
+                return false;
+            }
         }
 
-        return success;
+        return true;
     }
 
     public static PowerProfile getCurrentProfile(Context context) {
         PowerProfile saved = getSavedProfile(context);
-        if (saved == PowerProfile.AUTO) {
-            return PowerProfile.AUTO;
-        }
-        String value = readOneLine(SCONFIG_NODE);
-        if (value == null) {
-            return saved != PowerProfile.UNKNOWN ? saved : PowerProfile.DEFAULT;
-        }
-        String trimmed = value.trim();
-        if (CHARGING_BOOST_SCONFIG_VALUE.equals(trimmed)) {
-            return saved;
-        }
-        try {
-            PowerProfile profile = PowerProfile.fromValue(Integer.parseInt(trimmed));
-            return (profile != PowerProfile.UNKNOWN) ? profile : saved;
-        } catch (NumberFormatException e) {
-            return saved != PowerProfile.UNKNOWN ? saved : PowerProfile.DEFAULT;
-        }
-    }
-
-    public static boolean writeProfile(PowerProfile profile) {
-        boolean success = writeLine(SCONFIG_NODE, String.valueOf(profile.getValue()));
-        if (success) {
-            try {
-                SystemProperties.set(SYS_PERF_PROP, profile.getSysPropValue());
-            } catch (Exception ignored) {
-            }
-        }
-        return success;
+        return (saved != PowerProfile.UNKNOWN) ? saved : PowerProfile.AUTO;
     }
 
     public static boolean isHtsrActive(Context context) {
@@ -312,86 +221,37 @@ public final class PowerProfileUtils {
     }
 
     public static boolean updateTouchSampling(Context context, boolean enable) {
-        boolean success = writeLine(HTSR_NODE, enable ? "1" : "0");
-        if (!success) {
-            Log.e(TAG, "Failed to write HTSR sysfs state");
-            return false;
-        }
-
-        SharedPreferences htsrPrefs = context.getSharedPreferences(SHAREDHTSR, Context.MODE_PRIVATE);
-        htsrPrefs.edit().putBoolean(HTSR_STATE, enable).apply();
-
         try {
             Settings.System.putInt(context.getContentResolver(), "htsr_state", enable ? 1 : 0);
         } catch (Exception ignored) {
         }
 
+        SharedPreferences htsrPrefs = context.getSharedPreferences(SHAREDHTSR, Context.MODE_PRIVATE);
+        htsrPrefs.edit().putBoolean(HTSR_STATE, enable).apply();
+
+        Intent intent = new Intent(ACTION_SET_HTSR);
+        intent.setComponent(new ComponentName("org.lineageos.settings",
+                "org.lineageos.settings.power.PowerProfileReceiver"));
+        intent.putExtra(EXTRA_HTSR_STATE, enable);
+        intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
         try {
-            Intent serviceIntent = new Intent();
-            serviceIntent.setClassName("org.lineageos.settings", "org.lineageos.settings.touchsampling.TouchSamplingService");
-            if (enable) {
-                context.startService(serviceIntent);
-            } else {
-                context.stopService(serviceIntent);
+            context.sendBroadcastAsUser(intent, UserHandle.ALL);
+            return true;
+        } catch (Exception e) {
+            try {
+                context.sendBroadcast(intent);
+                return true;
+            } catch (Exception ex) {
+                Log.e(TAG, "Failed to send HTSR intent from SystemUI", ex);
+                return false;
             }
-        } catch (Exception ignored) {
         }
-
-        context.sendBroadcast(new Intent("org.lineageos.settings.touchsampling.ACTION_UPDATE_TILE"));
-        return true;
-    }
-
-    private static void ensureNotificationChannel(Context context) {
-        NotificationManager manager = context.getSystemService(NotificationManager.class);
-        if (manager == null) return;
-        NotificationChannel channel = new NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                context.getString(R.string.perf_mode_title),
-                NotificationManager.IMPORTANCE_DEFAULT);
-        channel.setBlockable(true);
-        manager.createNotificationChannel(channel);
     }
 
     public static void showPerformanceNotification(Context context, PowerProfile profile) {
-        ensureNotificationChannel(context);
-        NotificationManager manager = context.getSystemService(NotificationManager.class);
-        if (manager == null) return;
-
-        Intent intent = new Intent();
-        intent.setClassName("org.lineageos.settings", "org.lineageos.settings.power.PowerProfileActivity");
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pendingIntent = PendingIntent.getActivity(
-                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        int contentTextResId;
-        switch (profile) {
-            case GAMING:
-                contentTextResId = R.string.gaming_mode_notification;
-                break;
-            case PERFORMANCE:
-                contentTextResId = R.string.perf_mode_notification;
-                break;
-            case BATTERY:
-                contentTextResId = R.string.battery_mode_notification;
-                break;
-            case AUTO:
-                contentTextResId = R.string.auto_mode_notification;
-                break;
-            case DEFAULT:
-            default:
-                contentTextResId = R.string.balanced_mode_notification;
-                break;
-        }
-
-        Notification notification = new Notification.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setContentTitle(context.getString(profile.getNameResId()))
-                .setContentText(context.getString(contentTextResId))
-                .setSmallIcon(profile.getIconResId())
-                .setContentIntent(pendingIntent)
-                .setOngoing(true)
-                .build();
-
-        manager.notify(PERFORMANCE_NOTIFICATION_ID, notification);
+        // Notification is solely managed by org.lineageos.settings backend.
+        // Clean up any legacy notification that might have been posted from SystemUI.
+        cancelPerformanceNotification(context);
     }
 
     public static void cancelPerformanceNotification(Context context) {
@@ -532,22 +392,5 @@ public final class PowerProfileUtils {
 
     private static SharedPreferences prefs(Context context) {
         return PreferenceManager.getDefaultSharedPreferences(context);
-    }
-
-    private static String readOneLine(String path) {
-        try (BufferedReader br = new BufferedReader(new FileReader(path))) {
-            return br.readLine();
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
-    private static boolean writeLine(String path, String value) {
-        try (FileWriter fw = new FileWriter(path)) {
-            fw.write(value);
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
     }
 }

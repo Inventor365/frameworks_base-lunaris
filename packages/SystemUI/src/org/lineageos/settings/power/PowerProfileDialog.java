@@ -147,6 +147,10 @@ public class PowerProfileDialog extends SystemUIDialog {
                     Settings.System.getUriFor(PowerProfileUtils.POWER_PROFILE_SETTING),
                     false,
                     mProfileObserver);
+            mContext.getContentResolver().registerContentObserver(
+                    Settings.System.getUriFor("htsr_state"),
+                    false,
+                    mProfileObserver);
         } catch (Exception e) {
             Log.e(TAG, "Failed to register profile content observer in SystemUI", e);
         }

@@ -20,8 +20,10 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.ContentObserver;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.service.quicksettings.Tile;
 
 import androidx.annotation.Nullable;
@@ -68,6 +70,13 @@ public class PowerProfileTile extends QSTileImpl<QSTile.State> {
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            refreshState();
+        }
+    };
+
+    private final ContentObserver mProfileObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override
+        public void onChange(boolean selfChange) {
             refreshState();
         }
     };
@@ -157,10 +166,21 @@ public class PowerProfileTile extends QSTileImpl<QSTile.State> {
         if (listening) {
             IntentFilter filter = new IntentFilter(PowerProfileUtils.ACTION_PROFILE_CHANGED);
             mContext.registerReceiver(mReceiver, filter, Context.RECEIVER_EXPORTED);
+            try {
+                mContext.getContentResolver().registerContentObserver(
+                        Settings.System.getUriFor(PowerProfileUtils.POWER_PROFILE_SETTING),
+                        false,
+                        mProfileObserver);
+            } catch (Exception ignored) {
+            }
             refreshState();
         } else {
             try {
                 mContext.unregisterReceiver(mReceiver);
+            } catch (Exception ignored) {
+            }
+            try {
+                mContext.getContentResolver().unregisterContentObserver(mProfileObserver);
             } catch (Exception ignored) {
             }
         }
