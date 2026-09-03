@@ -27,6 +27,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
+import android.database.ContentObserver;
 import android.graphics.drawable.Drawable;
 import android.metrics.LogMaker;
 import android.net.Uri;
@@ -128,6 +129,14 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
         }
     };
     private boolean mPowerProfileReceiverRegistered = false;
+
+    private final ContentObserver mPowerProfileObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override
+        public void onChange(boolean selfChange) {
+            refreshState();
+        }
+    };
+    private boolean mPowerProfileObserverRegistered = false;
 
     private boolean isPowerProfileTile() {
         return mComponent != null && "org.lineageos.settings.power.PowerProfileTileService".equals(mComponent.getClassName());
@@ -368,6 +377,17 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
                         Log.e(TAG, "Failed to register PowerProfile receiver in CustomTile", e);
                     }
                 }
+                if (!mPowerProfileObserverRegistered) {
+                    try {
+                        mUserContext.getContentResolver().registerContentObserver(
+                                Settings.System.getUriFor(org.lineageos.settings.power.PowerProfileUtils.POWER_PROFILE_SETTING),
+                                false,
+                                mPowerProfileObserver);
+                        mPowerProfileObserverRegistered = true;
+                    } catch (Exception e) {
+                        Log.e(TAG, "Failed to register PowerProfile content observer in CustomTile", e);
+                    }
+                }
             } else {
                 if (mPowerProfileReceiverRegistered) {
                     try {
@@ -375,6 +395,13 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
                     } catch (Exception ignored) {
                     }
                     mPowerProfileReceiverRegistered = false;
+                }
+                if (mPowerProfileObserverRegistered) {
+                    try {
+                        mUserContext.getContentResolver().unregisterContentObserver(mPowerProfileObserver);
+                    } catch (Exception ignored) {
+                    }
+                    mPowerProfileObserverRegistered = false;
                 }
             }
         }
@@ -416,6 +443,13 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
             } catch (Exception ignored) {
             }
             mPowerProfileReceiverRegistered = false;
+        }
+        if (mPowerProfileObserverRegistered) {
+            try {
+                mUserContext.getContentResolver().unregisterContentObserver(mPowerProfileObserver);
+            } catch (Exception ignored) {
+            }
+            mPowerProfileObserverRegistered = false;
         }
         if (mIsTokenGranted) {
             try {
