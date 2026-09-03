@@ -156,7 +156,7 @@ public class PowerProfileTile extends QSTileImpl<QSTile.State> {
         mListening = listening;
         if (listening) {
             IntentFilter filter = new IntentFilter(PowerProfileUtils.ACTION_PROFILE_CHANGED);
-            mContext.registerReceiver(mReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            mContext.registerReceiver(mReceiver, filter, Context.RECEIVER_EXPORTED);
             refreshState();
         } else {
             try {
