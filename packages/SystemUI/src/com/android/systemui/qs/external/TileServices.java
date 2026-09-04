@@ -288,7 +288,8 @@ public class TileServices extends IQSService.Stub {
     private boolean shouldKeepShadeOpen(CustomTileInterface customTile) {
         if (customTile == null || customTile.getComponent() == null) return false;
         String className = customTile.getComponent().getClassName();
-        return className.endsWith(".PowerProfileTileService");
+        return className.endsWith(".PowerProfileTileService")
+                || className.endsWith(".ChargingControlTileService");
     }
 
     @Override

@@ -369,4 +369,15 @@
     <string name="battery_mode_notification">Battery Saver mode is active. Tap to open settings.</string>
     <string name="auto_mode_notification">Auto mode is active. Tap to open settings.</string>
     <string name="done_button">Done</string>
+
+    <!-- Yuki Charging Service QS Tile & Dialog -->
+    <string name="charging_control_title">Yuki Charging Service</string>
+    <string name="charging_control_summary">Choose a charging mode</string>
+    <string name="charging_control_dialog_subtitle">Choose a charging mode</string>
+    <string name="charging_control_tile_slow">Slow</string>
+    <string name="charging_control_tile_fast">Fast</string>
+    <string name="charging_control_tile_superfast">Superfast</string>
+    <string name="charging_control_slow_desc">Restricts charging current to reduce battery temperature and maximize lifespan.</string>
+    <string name="charging_control_fast_desc">Balanced fast charging with standard system thermal regulation.</string>
+    <string name="charging_control_superfast_desc">Maximum throughput bypassing software limits for rapid charging.</string>
 </resources>

@@ -142,6 +142,10 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
         return mComponent != null && "org.lineageos.settings.power.PowerProfileTileService".equals(mComponent.getClassName());
     }
 
+    private boolean isChargingControlTile() {
+        return mComponent != null && "org.lineageos.settings.charge.ChargingControlTileService".equals(mComponent.getClassName());
+    }
+
     @AssistedInject
     CustomTile(
             Lazy<QSHost> host,
@@ -366,26 +370,35 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
         if (mListening == listening) return;
         mListening = listening;
 
-        if (isPowerProfileTile()) {
+        if (isPowerProfileTile() || isChargingControlTile()) {
             if (listening) {
                 if (!mPowerProfileReceiverRegistered) {
-                    IntentFilter filter = new IntentFilter(org.lineageos.settings.power.PowerProfileUtils.ACTION_PROFILE_CHANGED);
+                    IntentFilter filter = new IntentFilter();
+                    filter.addAction(org.lineageos.settings.power.PowerProfileUtils.ACTION_PROFILE_CHANGED);
+                    filter.addAction(org.lineageos.settings.charge.ChargingControlUtils.ACTION_CHARGING_CONTROL_CHANGED);
                     try {
                         mUserContext.registerReceiver(mPowerProfileReceiver, filter, Context.RECEIVER_EXPORTED);
                         mPowerProfileReceiverRegistered = true;
                     } catch (Exception e) {
-                        Log.e(TAG, "Failed to register PowerProfile receiver in CustomTile", e);
+                        Log.e(TAG, "Failed to register PowerProfile/ChargingControl receiver in CustomTile", e);
                     }
                 }
                 if (!mPowerProfileObserverRegistered) {
                     try {
-                        mUserContext.getContentResolver().registerContentObserver(
-                                Settings.System.getUriFor(org.lineageos.settings.power.PowerProfileUtils.POWER_PROFILE_SETTING),
-                                false,
-                                mPowerProfileObserver);
+                        if (isPowerProfileTile()) {
+                            mUserContext.getContentResolver().registerContentObserver(
+                                    Settings.System.getUriFor(org.lineageos.settings.power.PowerProfileUtils.POWER_PROFILE_SETTING),
+                                    false,
+                                    mPowerProfileObserver);
+                        } else {
+                            mUserContext.getContentResolver().registerContentObserver(
+                                    Settings.System.getUriFor(org.lineageos.settings.charge.ChargingControlUtils.FAST_CHARGE_MODE_SETTING),
+                                    false,
+                                    mPowerProfileObserver);
+                        }
                         mPowerProfileObserverRegistered = true;
                     } catch (Exception e) {
-                        Log.e(TAG, "Failed to register PowerProfile content observer in CustomTile", e);
+                        Log.e(TAG, "Failed to register content observer in CustomTile", e);
                     }
                 }
             } else {
@@ -518,6 +531,23 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
             });
             return;
         }
+
+        if (isChargingControlTile()) {
+            mUiHandler.post(() -> {
+                org.lineageos.settings.charge.ChargingControlDialog dialog =
+                        new org.lineageos.settings.charge.ChargingControlDialog(mUserContext);
+                if (expandable != null) {
+                    com.android.systemui.animation.DialogTransitionAnimator.Controller controller = expandable.dialogTransitionController(
+                            new com.android.systemui.animation.DialogCuj(com.android.internal.jank.InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN, "charging_control"));
+                    if (controller != null && mTileServices.getDialogTransitionAnimator() != null) {
+                        mTileServices.getDialogTransitionAnimator().show(dialog, controller);
+                        return;
+                    }
+                }
+                dialog.show();
+            });
+            return;
+        }
         try {
             if (DEBUG) Log.d(TAG, "Adding token");
             mWindowManager.addWindowToken(mToken, TYPE_QS_DIALOG,
@@ -563,6 +593,25 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
             state.label = mUserContext.getString(com.android.systemui.res.R.string.powerprofile_title);
             state.secondaryLabel = mUserContext.getString(current.getNameResId());
             state.icon = ResourceIcon.get(current.getIconResId());
+            return;
+        }
+
+        if (isChargingControlTile()) {
+            String mode = org.lineageos.settings.charge.ChargingControlUtils.getFastChargeMode(mUserContext);
+            state.label = mUserContext.getString(com.android.systemui.res.R.string.charging_control_title);
+            if ("0".equals(mode)) {
+                state.state = Tile.STATE_INACTIVE;
+                state.secondaryLabel = mUserContext.getString(com.android.systemui.res.R.string.charging_control_tile_slow);
+                state.icon = ResourceIcon.get(com.android.systemui.res.R.drawable.ic_charging_slow);
+            } else if ("2".equals(mode)) {
+                state.state = Tile.STATE_ACTIVE;
+                state.secondaryLabel = mUserContext.getString(com.android.systemui.res.R.string.charging_control_tile_superfast);
+                state.icon = ResourceIcon.get(com.android.systemui.res.R.drawable.ic_charging_superfast);
+            } else {
+                state.state = Tile.STATE_ACTIVE;
+                state.secondaryLabel = mUserContext.getString(com.android.systemui.res.R.string.charging_control_tile_fast);
+                state.icon = ResourceIcon.get(com.android.systemui.res.R.drawable.ic_charging_fast);
+            }
             return;
         }
 
