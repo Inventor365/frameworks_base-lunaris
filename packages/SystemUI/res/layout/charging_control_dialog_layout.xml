@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     Copyright (C) 2026 The LineageOS Project
+     SPDX-License-Identifier: Apache-2.0
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:androidprv="http://schemas.android.com/apk/prv/res/android"
+    android:id="@+id/charging_control_dialog_root"
+    android:layout_width="@dimen/large_dialog_width"
+    android:layout_height="wrap_content"
+    android:layout_gravity="center"
+    android:orientation="vertical"
+    android:background="@drawable/power_profile_dialog_bg"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="20dp"
+    android:paddingBottom="16dp">
+
+    <!-- Header Section -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="12dp">
+
+        <TextView
+            android:id="@+id/dialog_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/charging_control_title"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="@androidprv:color/materialColorOnSurface"
+            android:ellipsize="end"
+            android:maxLines="1" />
+
+        <TextView
+            android:id="@+id/dialog_subtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/charging_control_dialog_subtitle"
+            android:textSize="14sp"
+            android:textColor="@androidprv:color/materialColorOnSurfaceVariant"
+            android:ellipsize="end"
+            android:maxLines="1" />
+
+    </LinearLayout>
+
+    <!-- Modes Container -->
+    <LinearLayout
+        android:id="@+id/modes_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical" />
+
+    <!-- Bottom Footer Row: Done Button (Right) -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
+
+        <Button
+            android:id="@+id/done_button"
+            style="@style/PowerProfileDialogButton"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:text="@string/done_button"
+            android:textAllCaps="false" />
+
+    </RelativeLayout>
+
+</LinearLayout>
