@@ -153,6 +153,14 @@ public final class PowerProfileUtils {
     public static boolean applyProfile(Context context, PowerProfile profile) {
         saveProfile(context, profile);
 
+        boolean htsrEnabled = profile == PowerProfile.PERFORMANCE || profile == PowerProfile.GAMING;
+        try {
+            Settings.System.putInt(context.getContentResolver(), "htsr_state", htsrEnabled ? 1 : 0);
+        } catch (Exception ignored) {
+        }
+        context.getSharedPreferences(SHAREDHTSR, Context.MODE_PRIVATE)
+                .edit().putBoolean(HTSR_STATE, htsrEnabled).apply();
+
         Intent intent = new Intent(ACTION_SET_POWER_PROFILE);
         intent.setComponent(new ComponentName("org.lineageos.settings",
                 "org.lineageos.settings.power.PowerProfileReceiver"));
