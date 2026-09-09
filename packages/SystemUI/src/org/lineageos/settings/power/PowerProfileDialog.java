@@ -21,21 +21,29 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.database.ContentObserver;
+import android.graphics.Insets;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.WindowMetrics;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -61,7 +69,11 @@ public class PowerProfileDialog extends SystemUIDialog {
     };
 
     private final Context mContext;
+    private View mDialogRoot;
+    private View mHeader;
+    private ScrollView mProfilesScrollView;
     private LinearLayout mProfilesContainer;
+    private View mFooter;
     private LinearLayout mHtsrToggleButton;
     private ImageView mHtsrIcon;
     private TextView mHtsrText;
@@ -111,7 +123,11 @@ public class PowerProfileDialog extends SystemUIDialog {
         }
 
         setCanceledOnTouchOutside(true);
+        mDialogRoot = findViewById(R.id.power_profile_dialog_root);
+        mHeader = findViewById(R.id.dialog_header);
+        mProfilesScrollView = findViewById(R.id.profiles_scroll_view);
         mProfilesContainer = findViewById(R.id.profiles_container);
+        mFooter = findViewById(R.id.dialog_footer);
         mHtsrToggleButton = findViewById(R.id.htsr_toggle_button);
         mHtsrIcon = findViewById(R.id.htsr_icon);
         mHtsrText = findViewById(R.id.htsr_text);
@@ -124,7 +140,25 @@ public class PowerProfileDialog extends SystemUIDialog {
             });
         }
 
+        if (window != null) {
+            View decorView = window.getDecorView();
+            if (decorView != null) {
+                decorView.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                    if ((right - left) != (oldRight - oldLeft) || (bottom - top) != (oldBottom - oldTop)) {
+                        updateDialogDimensions();
+                    }
+                });
+            }
+        }
+
         refreshProfiles();
+        updateDialogDimensions();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        updateDialogDimensions();
     }
 
     @Override
@@ -182,6 +216,7 @@ public class PowerProfileDialog extends SystemUIDialog {
     public void refreshProfiles() {
         if (mProfilesContainer == null) return;
 
+        final int scrollY = mProfilesScrollView != null ? mProfilesScrollView.getScrollY() : 0;
         mProfilesContainer.removeAllViews();
         PowerProfile currentProfile = PowerProfileUtils.getCurrentProfile(mContext);
         LayoutInflater inflater = LayoutInflater.from(mContext);
@@ -234,6 +269,95 @@ public class PowerProfileDialog extends SystemUIDialog {
         }
 
         updateHtsrButton(activeOnContainerColor, inactiveTitleColor, inactiveDescColor);
+        updateDialogDimensions();
+
+        if (mProfilesScrollView != null && scrollY > 0) {
+            mProfilesScrollView.post(() -> mProfilesScrollView.scrollTo(0, scrollY));
+        }
+    }
+
+    private void updateDialogDimensions() {
+        if (mProfilesScrollView == null) return;
+
+        Context context = mContext != null ? mContext : getContext();
+        Configuration config = context.getResources().getConfiguration();
+        boolean isLandscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE;
+
+        DisplayMetrics dm = context.getResources().getDisplayMetrics();
+        int screenHeightPx = dm.heightPixels;
+        float density = dm.density;
+
+        if (isLandscape) {
+            int availableHeightPx = screenHeightPx;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                WindowManager wm = context.getSystemService(WindowManager.class);
+                if (wm != null) {
+                    try {
+                        WindowMetrics wmBounds = wm.getCurrentWindowMetrics();
+                        Rect bounds = wmBounds.getBounds();
+                        Insets insets = wmBounds.getWindowInsets().getInsetsIgnoringVisibility(
+                                WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                        int heightWithoutInsets = bounds.height() - insets.top - insets.bottom;
+                        if (heightWithoutInsets > 0) {
+                            availableHeightPx = heightWithoutInsets;
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+
+            // Reserve 24dp vertical margin (12dp top + 12dp bottom) to ensure a floating panel appearance
+            int marginVerticalPx = Math.round(24 * density);
+            int maxDialogHeightPx = availableHeightPx - marginVerticalPx;
+
+            int rootPaddingPx = mDialogRoot != null
+                    ? (mDialogRoot.getPaddingTop() + mDialogRoot.getPaddingBottom())
+                    : Math.round(36 * density);
+
+            int headerHeightPx = 0;
+            if (mHeader != null) {
+                mHeader.measure(
+                        View.MeasureSpec.makeMeasureSpec(dm.widthPixels, View.MeasureSpec.AT_MOST),
+                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                headerHeightPx = mHeader.getMeasuredHeight();
+            }
+            if (headerHeightPx <= 0) {
+                headerHeightPx = Math.round(60 * density);
+            }
+
+            int footerHeightPx = 0;
+            if (mFooter != null) {
+                mFooter.measure(
+                        View.MeasureSpec.makeMeasureSpec(dm.widthPixels, View.MeasureSpec.AT_MOST),
+                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                ViewGroup.MarginLayoutParams footerLp = (ViewGroup.MarginLayoutParams) mFooter.getLayoutParams();
+                int footerMarginTop = footerLp != null ? footerLp.topMargin : Math.round(16 * density);
+                footerHeightPx = mFooter.getMeasuredHeight() + footerMarginTop;
+            }
+            if (footerHeightPx <= 0) {
+                footerHeightPx = Math.round(54 * density);
+            }
+
+            int nonScrollableHeightPx = rootPaddingPx + headerHeightPx + footerHeightPx;
+            int maxScrollHeightPx = maxDialogHeightPx - nonScrollableHeightPx;
+
+            int minScrollHeightPx = Math.round(130 * density);
+            if (maxScrollHeightPx < minScrollHeightPx) {
+                maxScrollHeightPx = minScrollHeightPx;
+            }
+
+            ViewGroup.LayoutParams lp = mProfilesScrollView.getLayoutParams();
+            if (lp != null && lp.height != maxScrollHeightPx) {
+                lp.height = maxScrollHeightPx;
+                mProfilesScrollView.setLayoutParams(lp);
+            }
+        } else {
+            ViewGroup.LayoutParams lp = mProfilesScrollView.getLayoutParams();
+            if (lp != null && lp.height != ViewGroup.LayoutParams.WRAP_CONTENT) {
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                mProfilesScrollView.setLayoutParams(lp);
+            }
+        }
     }
 
     private void updateHtsrButton(int activeColor, int inactiveTitleColor, int inactiveDescColor) {
