@@ -285,16 +285,19 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
                 return chain;
             }
 
-            int callingUid = android.os.Binder.getCallingUid();
-            String[] packages = android.app.ActivityThread.getPackageManager()
-                    .getPackagesForUid(callingUid);
-
-            if (service.needHack(callingUid, packages)) {
-                Certificate[] hackedChain = CertificateHacker.hackCertificateChain(chain);
-                if (hackedChain != null) {
-                    Log.d(TAG, "TrickyStore: Hacked certificate chain for uid=" + callingUid);
-                    return hackedChain;
+            try {
+                int callingUid = android.os.Binder.getCallingUid();
+                String[] packages = android.app.ActivityThread.getPackageManager()
+                        .getPackagesForUid(callingUid);
+                if (service.isPackageSkipped(packages)) {
+                    return chain;
                 }
+            } catch (Exception ignored) {
+            }
+
+            Certificate[] hackedChain = CertificateHacker.hackCertificateChain(chain);
+            if (hackedChain != null) {
+                return hackedChain;
             }
         } catch (Exception e) {
             Log.e(TAG, "TrickyStore: Failed to hack certificate chain", e);

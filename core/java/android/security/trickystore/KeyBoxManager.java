@@ -70,7 +70,9 @@ public class KeyBoxManager {
     }
 
     public KeyBox getKeybox(String algorithm) {
-        return mKeyboxes.get(algorithm);
+        if (algorithm == null) return null;
+        String normalized = algorithm.equalsIgnoreCase("ecdsa") ? "EC" : algorithm.toUpperCase();
+        return mKeyboxes.get(normalized);
     }
 
     public void parseKeybox(String xmlContent) {

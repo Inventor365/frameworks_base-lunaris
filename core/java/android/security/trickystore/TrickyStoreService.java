@@ -495,6 +495,15 @@ public class TrickyStoreService {
         return false;
     }
 
+    public boolean isPackageSkipped(String[] packages) {
+        if (packages == null) return false;
+        maybeRefreshTargets();
+        for (String pkg : packages) {
+            if (mSkipPackages.contains(pkg)) return true;
+        }
+        return false;
+    }
+
     private void maybeRefreshTargets() {
         long now = System.currentTimeMillis();
         if (now - mLastTargetsRefreshMs >= TARGETS_REFRESH_COOLDOWN_MS) {
