@@ -70,6 +70,7 @@ import com.android.systemui.keyguard.WakefulnessLifecycle;
 import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor;
 import com.android.systemui.monet.DynamicColors;
 import com.android.systemui.settings.UserTracker;
+import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController.DeviceProvisionedListener;
 import com.android.systemui.user.utils.UserScopedService;
@@ -158,6 +159,8 @@ public class ThemeOverlayControllerTest extends SysuiTestCase {
 
     @Mock
     private SystemPropertiesHelper mSystemProperties;
+    @Mock
+    private ConfigurationController mConfigurationController;
 
     @Before
     public void setup() {
@@ -192,7 +195,7 @@ public class ThemeOverlayControllerTest extends SysuiTestCase {
                 mSecureSettings, mWallpaperManager, mUserManager, mDeviceProvisionedController,
                 mUserTracker, mDumpManager, mFeatureFlags, mResources, mWakefulnessLifecycle,
                 mJavaAdapter, mKeyguardTransitionInteractor, mUiModeManager, mUiModeManagerProvider,
-                mActivityManager, mSystemProperties) {
+                mActivityManager, mSystemProperties, mConfigurationController) {
             @VisibleForTesting
             protected boolean isNightMode() {
                 return false;
@@ -230,6 +233,19 @@ public class ThemeOverlayControllerTest extends SysuiTestCase {
                 eq(Settings.Secure.THEME_CUSTOMIZATION_OVERLAY_PACKAGES),
                 eq(false), mSettingsObserver.capture(), eq(UserHandle.USER_ALL)
         );
+        verify(mConfigurationController).addCallback(any());
+    }
+
+    @Test
+    public void onUiModeChanged_reevaluatesTheme() {
+        ArgumentCaptor<ConfigurationController.ConfigurationListener> listenerCaptor =
+                ArgumentCaptor.forClass(ConfigurationController.ConfigurationListener.class);
+        verify(mConfigurationController).addCallback(listenerCaptor.capture());
+
+        clearInvocations(mThemeOverlayApplier);
+        listenerCaptor.getValue().onUiModeChanged();
+
+        verify(mThemeOverlayApplier).applyCurrentUserOverlays(any(), any(), anyInt(), any(), any());
     }
 
     @Test
@@ -934,7 +950,7 @@ public class ThemeOverlayControllerTest extends SysuiTestCase {
                 mSecureSettings, mWallpaperManager, mUserManager, mDeviceProvisionedController,
                 mUserTracker, mDumpManager, mFeatureFlags, mResources, mWakefulnessLifecycle,
                 mJavaAdapter, mKeyguardTransitionInteractor, mUiModeManager, mUiModeManagerProvider,
-                mActivityManager, mSystemProperties) {
+                mActivityManager, mSystemProperties, mConfigurationController) {
             @VisibleForTesting
             protected boolean isNightMode() {
                 return false;
@@ -975,7 +991,7 @@ public class ThemeOverlayControllerTest extends SysuiTestCase {
                 mSecureSettings, mWallpaperManager, mUserManager, mDeviceProvisionedController,
                 mUserTracker, mDumpManager, mFeatureFlags, mResources, mWakefulnessLifecycle,
                 mJavaAdapter, mKeyguardTransitionInteractor, mUiModeManager, mUiModeManagerProvider,
-                mActivityManager, mSystemProperties) {
+                mActivityManager, mSystemProperties, mConfigurationController) {
             @VisibleForTesting
             protected boolean isNightMode() {
                 return false;

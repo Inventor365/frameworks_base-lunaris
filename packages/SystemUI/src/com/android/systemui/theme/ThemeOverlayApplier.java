@@ -242,15 +242,15 @@ public class ThemeOverlayApplier implements Dumpable {
             final List<OverlayInfo> overlays = new ArrayList<>();
             targetPackagesToQuery.forEach(targetPackage -> overlays.addAll(mOverlayManager
                     .getOverlayInfosForTarget(targetPackage, UserHandle.SYSTEM)));
-            final List<Pair<String, String>> overlaysToDisable = overlays.stream()
+            final List<Pair<String, OverlayIdentifier>> overlaysToDisable = overlays.stream()
                     .filter(o ->
                             mTargetPackageToCategories.get(o.targetPackageName).contains(
                                     o.category))
                     .filter(o -> overlayCategoriesToDisable.contains(o.category))
                     .filter(o -> !categoryToPackage.containsValue(
-                            new OverlayIdentifier(o.packageName)))
+                            o.getOverlayIdentifier()))
                     .filter(o -> o.isEnabled())
-                    .map(o -> new Pair<>(o.category, o.packageName))
+                    .map(o -> new Pair<>(o.category, o.getOverlayIdentifier()))
                     .collect(Collectors.toList());
 
             OverlayManagerTransaction.Builder transaction = getTransactionBuilder();
@@ -266,8 +266,8 @@ public class ThemeOverlayApplier implements Dumpable {
                 }
             }
 
-            for (Pair<String, String> packageToDisable : overlaysToDisable) {
-                OverlayIdentifier overlayInfo = new OverlayIdentifier(packageToDisable.second);
+            for (Pair<String, OverlayIdentifier> packageToDisable : overlaysToDisable) {
+                OverlayIdentifier overlayInfo = packageToDisable.second;
                 setEnabled(transaction, overlayInfo, packageToDisable.first, currentUser,
                         managedProfiles, false, identifiersPending.contains(overlayInfo));
             }
