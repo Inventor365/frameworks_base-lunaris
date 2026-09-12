@@ -86,6 +86,7 @@ import com.android.systemui.keyguard.shared.model.KeyguardState;
 import com.android.systemui.monet.ColorScheme;
 import com.android.systemui.monet.DynamicColors;
 import com.android.systemui.settings.UserTracker;
+import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController.DeviceProvisionedListener;
 import com.android.systemui.user.utils.UserScopedService;
@@ -145,6 +146,7 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
     private final UserTracker mUserTracker;
     private final DeviceProvisionedController mDeviceProvisionedController;
     private final Resources mResources;
+    private final ConfigurationController mConfigurationController;
     // Current wallpaper colors associated to a user.
     @VisibleForTesting
     protected final SparseArray<WallpaperColors> mCurrentColors = new SparseArray<>();
@@ -467,7 +469,8 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
             UiModeManager uiModeManager, // TODO(b/362682063) legacy argument, remove
             UserScopedService<UiModeManager> uiModeManagerProvider,
             ActivityManager activityManager,
-            SystemPropertiesHelper systemPropertiesHelper
+            SystemPropertiesHelper systemPropertiesHelper,
+            ConfigurationController configurationController
     ) {
         mContext = context;
         mIsMonetEnabled = featureFlags.isEnabled(Flags.MONET);
@@ -482,6 +485,7 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
         mWallpaperManager = wallpaperManager;
         mUserTracker = userTracker;
         mResources = resources;
+        mConfigurationController = configurationController;
         mWakefulnessLifecycle = wakefulnessLifecycle;
         mJavaAdapter = javaAdapter;
         mKeyguardTransitionInteractor = keyguardTransitionInteractor;
@@ -565,6 +569,17 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
                     }
                 },
                 UserHandle.USER_ALL);
+
+        mConfigurationController.addCallback(new ConfigurationController.ConfigurationListener() {
+            @Override
+            public void onUiModeChanged() {
+                if (DEBUG) Log.d(TAG, "onUiModeChanged, isNightMode=" + isNightMode());
+                if (!mDeviceProvisionedController.isCurrentUserSetup()) {
+                    return;
+                }
+                reevaluateSystemTheme(true /* forceReload */);
+            }
+        });
 
         // All wallpaper color and keyguard logic only applies when Monet is enabled.
         if (!mIsMonetEnabled) {
@@ -1071,8 +1086,11 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
 
         // Compatibility with legacy themes, where full packages were defined, instead of just
         // colors.
-        if (!categoryToPackage.containsKey(OVERLAY_CATEGORY_SYSTEM_PALETTE)
-                && mNeutralOverlay != null && !isBlackMode) {
+        if (isBlackMode) {
+            categoryToPackage.put(OVERLAY_CATEGORY_SYSTEM_PALETTE,
+                    new OverlayIdentifier(ThemeOverlayApplier.OVERLAY_BLACK_THEME));
+        } else if (!categoryToPackage.containsKey(OVERLAY_CATEGORY_SYSTEM_PALETTE)
+                && mNeutralOverlay != null) {
             categoryToPackage.put(OVERLAY_CATEGORY_SYSTEM_PALETTE,
                     mNeutralOverlay.getIdentifier());
         }
@@ -1108,13 +1126,9 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
 
         if (mNeedsOverlayCreation) {
             mNeedsOverlayCreation = false;
-            fOverlays = new FabricatedOverlay[isBlackMode ? 2 : 3];
-            int c = 0;
-            fOverlays[c++] = mAccentOverlay;
-            if (!isBlackMode) {
-                fOverlays[c++] = mNeutralOverlay;
-            }
-            fOverlays[c++] = mDynamicOverlay;
+            fOverlays = new FabricatedOverlay[] {
+                    mAccentOverlay, mNeutralOverlay, mDynamicOverlay
+            };
         }
 
         mThemeManager.applyCurrentUserOverlays(categoryToPackage, fOverlays, currentUser,
