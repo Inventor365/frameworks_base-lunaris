@@ -232,8 +232,6 @@ public class ThemeOverlayApplier implements Dumpable {
     ) {
 
         mBgExecutor.execute(() -> {
-            boolean isBlackMode = false;
-
             // Disable all overlays that have not been specified in the user setting.
             final Set<String> overlayCategoriesToDisable = new HashSet<>(THEME_CATEGORIES);
             final Set<String> targetPackagesToQuery = overlayCategoriesToDisable.stream()
@@ -242,21 +240,20 @@ public class ThemeOverlayApplier implements Dumpable {
             final List<OverlayInfo> overlays = new ArrayList<>();
             targetPackagesToQuery.forEach(targetPackage -> overlays.addAll(mOverlayManager
                     .getOverlayInfosForTarget(targetPackage, UserHandle.SYSTEM)));
-            final List<Pair<String, String>> overlaysToDisable = overlays.stream()
+            final List<Pair<String, OverlayIdentifier>> overlaysToDisable = overlays.stream()
                     .filter(o ->
                             mTargetPackageToCategories.get(o.targetPackageName).contains(
                                     o.category))
                     .filter(o -> overlayCategoriesToDisable.contains(o.category))
                     .filter(o -> !categoryToPackage.containsValue(
-                            new OverlayIdentifier(o.packageName)))
+                            o.getOverlayIdentifier()))
                     .filter(o -> o.isEnabled())
-                    .map(o -> new Pair<>(o.category, o.packageName))
+                    .map(o -> new Pair<>(o.category, o.getOverlayIdentifier()))
                     .collect(Collectors.toList());
 
             OverlayManagerTransaction.Builder transaction = getTransactionBuilder();
             HashSet<OverlayIdentifier> identifiersPending = new HashSet<>();
             if (pendingCreation != null) {
-                isBlackMode = pendingCreation.length == 2;
                 for (FabricatedOverlay overlay : pendingCreation) {
                     try {
                         identifiersPending.add(overlay.getIdentifier());
@@ -267,8 +264,8 @@ public class ThemeOverlayApplier implements Dumpable {
                 }
             }
 
-            for (Pair<String, String> packageToDisable : overlaysToDisable) {
-                OverlayIdentifier overlayInfo = new OverlayIdentifier(packageToDisable.second);
+            for (Pair<String, OverlayIdentifier> packageToDisable : overlaysToDisable) {
+                OverlayIdentifier overlayInfo = packageToDisable.second;
                 setEnabled(transaction, overlayInfo, packageToDisable.first, currentUser,
                         managedProfiles, false, identifiersPending.contains(overlayInfo));
             }
@@ -290,43 +287,7 @@ public class ThemeOverlayApplier implements Dumpable {
             } catch (SecurityException | IllegalStateException e) {
                 Log.e(TAG, "setEnabled failed", e);
             }
-
-            checkDarkUserOverlays(currentUser, onComplete, isBlackMode);
         });
-    }
-
-    private void checkDarkUserOverlays(int currentUser, Runnable onComplete, boolean isBlackMode) {
-        OverlayManagerTransaction.Builder transaction = getTransactionBuilder();
-        try {
-            transaction.setEnabled(getOverlayID(OVERLAY_BLACK_THEME), isBlackMode, currentUser);
-            transaction.setEnabled(getOverlayID("android:neutral"), !isBlackMode, currentUser);
-            mOverlayManager.commit(transaction.build());
-            if (onComplete != null) {
-                Log.d(TAG, "Executing onComplete runnable");
-                mMainExecutor.execute(onComplete);
-            }
-        } catch (SecurityException | IllegalStateException e) {
-            Log.e(TAG, "setEnabled failed", e);
-        }
-    }
-
-    private OverlayIdentifier getOverlayID(String name) throws IllegalStateException {
-        if (name.contains(":")) {
-            final String[] value = name.split(":");
-            final String pkgName = value[0];
-            final String overlayName = value[1];
-            final List<OverlayInfo> infos =
-                    mOverlayManager.getOverlayInfosForTarget(pkgName, UserHandle.CURRENT);
-            for (OverlayInfo info : infos) {
-                if (overlayName.equals(info.getOverlayName()))
-                    return info.getOverlayIdentifier();
-            }
-            throw new IllegalStateException("No overlay found for " + name);
-        }
-        OverlayInfo overlayInfo = mOverlayManager.getOverlayInfo(name, UserHandle.CURRENT);
-        if (overlayInfo != null)
-            return overlayInfo.getOverlayIdentifier();
-        throw new IllegalStateException("No overlay found for " + name);
     }
 
     @VisibleForTesting
