@@ -42,6 +42,7 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.RSAPrivateCrtKey;
+import java.security.interfaces.RSAPrivateKey;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -88,8 +89,12 @@ public final class CertificateHacker {
 
             for (ASN1Encodable element : teeEnforced) {
                 ASN1TaggedObject taggedObject = (ASN1TaggedObject) element;
-                if (taggedObject.getTagNo() == 704) {
+                int tag = taggedObject.getTagNo();
+                if (tag == 704) {
                     originalRootOfTrust = taggedObject.getBaseObject().toASN1Primitive();
+                } else if (tag == 705 || tag == 706 || tag == 718 || tag == 719) {
+                    // Skip to prevent duplicate tags when overridden values are appended
+                    continue;
                 } else {
                     vector.add(taggedObject);
                 }
@@ -117,7 +122,11 @@ public final class CertificateHacker {
                 leafHolder.getSubjectPublicKeyInfo()
             );
 
-            ContentSigner signer = createBCSigner(leaf.getSigAlgName(), keybox.keyPair.getPrivate());
+            PrivateKey privKey = keybox.keyPair.getPrivate();
+            String sigAlg = (privKey instanceof RSAPrivateKey || privKey instanceof RSAPrivateCrtKey)
+                    ? "SHA256withRSA"
+                    : "SHA256withECDSA";
+            ContentSigner signer = createBCSigner(sigAlg, privKey);
 
             Extension hackedExtension = hackAttestExtension(originalRootOfTrust, vector, encodables);
             builder.addExtension(hackedExtension);
@@ -167,6 +176,10 @@ public final class CertificateHacker {
             return new ECContentSigner(sigAlgId, keyParam);
         } else if (privateKey instanceof RSAPrivateCrtKey) {
             RSAPrivateCrtKey rsaKey = (RSAPrivateCrtKey) privateKey;
+            RSAKeyParameters keyParam = new RSAKeyParameters(true, rsaKey.getModulus(), rsaKey.getPrivateExponent());
+            return new RSAContentSigner(sigAlgId, keyParam);
+        } else if (privateKey instanceof RSAPrivateKey) {
+            RSAPrivateKey rsaKey = (RSAPrivateKey) privateKey;
             RSAKeyParameters keyParam = new RSAKeyParameters(true, rsaKey.getModulus(), rsaKey.getPrivateExponent());
             return new RSAContentSigner(sigAlgId, keyParam);
         }
@@ -256,21 +269,26 @@ public final class CertificateHacker {
             ASN1EncodableVector vector,
             ASN1Encodable[] originalEncodables) throws Exception {
 
-        byte[] bootKey = AttestationUtils.getBootKey();
-        byte[] bootHash = AttestationUtils.getBootHash();
+        byte[] bootKey = null;
+        byte[] bootHash = null;
 
-        if (bootHash == null && originalRootOfTrust instanceof ASN1Sequence) {
+        if (originalRootOfTrust instanceof ASN1Sequence) {
             try {
                 ASN1Sequence rot = (ASN1Sequence) originalRootOfTrust;
-                ASN1Encodable hashElement = rot.getObjectAt(3);
-                if (hashElement instanceof DEROctetString) {
-                    bootHash = ((DEROctetString) hashElement).getOctets();
+                if (rot.size() >= 1 && rot.getObjectAt(0) instanceof DEROctetString) {
+                    bootKey = ((DEROctetString) rot.getObjectAt(0)).getOctets();
+                }
+                if (rot.size() >= 4 && rot.getObjectAt(3) instanceof DEROctetString) {
+                    bootHash = ((DEROctetString) rot.getObjectAt(3)).getOctets();
                 }
             } catch (Exception e) {
-                Log.w(TAG, "Failed to extract boot hash from original", e);
+                Log.w(TAG, "Failed to extract root of trust elements from original", e);
             }
         }
 
+        if (bootKey == null) {
+            bootKey = AttestationUtils.getBootKey();
+        }
         if (bootHash == null) {
             bootHash = AttestationUtils.getBootHash();
         }
