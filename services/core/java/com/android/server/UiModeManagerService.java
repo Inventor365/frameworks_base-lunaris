@@ -369,6 +369,7 @@ final class UiModeManagerService extends SystemService {
             synchronized (mLock) {
                 if (mNightMode.get() == UiModeManager.MODE_NIGHT_AUTO && mSystemReady) {
                     if (shouldApplyAutomaticChangesImmediately()) {
+                        unregisterDeviceInactiveListenerLocked();
                         updateLocked(0, 0);
                     } else {
                         registerDeviceInactiveListenerLocked();
@@ -765,6 +766,7 @@ final class UiModeManagerService extends SystemService {
     private void updateCustomTimeLocked() {
         if (mNightMode.get() != MODE_NIGHT_CUSTOM) return;
         if (shouldApplyAutomaticChangesImmediately()) {
+            unregisterDeviceInactiveListenerLocked();
             updateLocked(0, 0);
         } else {
             registerDeviceInactiveListenerLocked();
@@ -2180,9 +2182,7 @@ final class UiModeManagerService extends SystemService {
     }
 
     private boolean shouldApplyAutomaticChangesImmediately() {
-        return mCar || !mPowerManager.isInteractive()
-                || mNightModeCustomType == MODE_NIGHT_CUSTOM_TYPE_BEDTIME
-                || mDreamManagerInternal.isDreaming();
+        return true;
     }
 
     private void scheduleNextCustomTimeListener() {
