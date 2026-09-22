@@ -35,6 +35,9 @@
 #include <utils/NdkUtils.h>
 #include <utils/Trace.h>
 
+#include <thread>
+
+#include <ax_graphics/MediaBufferConverter.h>
 #include "hwui/Bitmap.h"
 #include "Properties.h"
 #include "renderthread/EglManager.h"
@@ -309,11 +312,17 @@ static bool checkSupport(AHardwareBuffer_Format format) {
 }
 
 bool HardwareBitmapUploader::hasFP16Support() {
+    if (axion::graphics::MediaBufferConverter::isConversionEnabled()) {
+        return false;
+    }
     static bool hasFP16Support = checkSupport(AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT);
     return hasFP16Support;
 }
 
 bool HardwareBitmapUploader::has1010102Support() {
+    if (axion::graphics::MediaBufferConverter::isConversionEnabled()) {
+        return false;
+    }
     static bool has101012Support = checkSupport(AHARDWAREBUFFER_FORMAT_R10G10B10A2_UNORM);
     return has101012Support;
 }
