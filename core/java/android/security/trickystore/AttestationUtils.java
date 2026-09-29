@@ -22,7 +22,8 @@ import java.security.cert.*;
 public final class AttestationUtils {
     private static final String TAG = "AttestationUtils";
 
-    private static final File CONFIG_DIR = new File("/data/adb/tricky_store");
+    private static final File CONFIG_DIR = new File("/data/system/tricky_store");
+    private static final File LEGACY_CONFIG_DIR = new File("/data/adb/tricky_store");
     private static final File BOOT_KEY_FILE = new File(CONFIG_DIR, "boot_key");
     private static final File HBK_FILE = new File(CONFIG_DIR, "hbk");
 
@@ -80,6 +81,7 @@ public final class AttestationUtils {
         if (hash != null) {
             sBootHash = hash;
             Log.i(TAG, "initBootHash: Boot hash loaded from disk: " + bytesToHex(hash));
+            setVbmetaDigestProp(bytesToHex(hash));
             return;
         }
         Log.i(TAG, "initBootHash: No prop or disk state, attempting TEE extraction");
@@ -319,7 +321,12 @@ public final class AttestationUtils {
 
     private static byte[] readPersisted(File file) {
         if (!file.isFile()) {
-            return null;
+            File legacy = new File(LEGACY_CONFIG_DIR, file.getName());
+            if (legacy.isFile()) {
+                file = legacy;
+            } else {
+                return null;
+            }
         }
         try {
             byte[] data = Files.readAllBytes(file.toPath());

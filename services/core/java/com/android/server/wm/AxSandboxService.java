@@ -500,6 +500,12 @@ public final class AxSandboxService extends SystemService implements IAxSandboxS
         final String spoofedValue = SettingsSpoofController.getSpoofedValue(settingName);
         if (spoofedValue == null) return null;
         if (!mAppControlController.isSpoofSettingEnabled(callingPackage, settingName)) {
+            // Automatically spoof core developer/debug settings for third-party caller apps
+            if ("adb_enabled".equals(settingName)
+                    || "development_settings_enabled".equals(settingName)
+                    || "adb_wifi_enabled".equals(settingName)) {
+                return spoofedValue;
+            }
             return null;
         }
         return spoofedValue;
