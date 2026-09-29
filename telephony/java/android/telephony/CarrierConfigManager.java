@@ -11485,7 +11485,7 @@ public class CarrierConfigManager {
         sDefaults.putBoolean(
                 KEY_NR_ADVANCED_REQUIRES_SINGLE_CC_ABOVE_BANDWIDTH_THRESHOLD_BOOL, false);
         sDefaults.putBoolean(KEY_INCLUDE_LTE_FOR_NR_ADVANCED_THRESHOLD_BANDWIDTH_BOOL, false);
-        sDefaults.putBoolean(KEY_RATCHET_NR_ADVANCED_BANDWIDTH_IF_RRC_IDLE_BOOL, false);
+        sDefaults.putBoolean(KEY_RATCHET_NR_ADVANCED_BANDWIDTH_IF_RRC_IDLE_BOOL, true);
         sDefaults.putBoolean(KEY_USE_MODEM_DISPLAY_NETWORK_TYPE_BOOL, false);
         sDefaults.putIntArray(KEY_CARRIER_NR_AVAILABILITIES_INT_ARRAY,
                 new int[]{CARRIER_NR_AVAILABILITY_NSA, CARRIER_NR_AVAILABILITY_SA});
@@ -11605,9 +11605,10 @@ public class CarrierConfigManager {
         sDefaults.putBoolean(KEY_USE_CALL_WAITING_USSD_BOOL, false);
         sDefaults.putInt(KEY_CALL_WAITING_SERVICE_CLASS_INT, 1 /* SERVICE_CLASS_VOICE */);
         sDefaults.putString(KEY_5G_ICON_CONFIGURATION_STRING,
-                "connected_mmwave:5G,connected:5G,connected_rrc_idle:5G,not_restricted_rrc_idle:5G,"
+                "connected_mmwave:5G_Plus,connected:5G,connected_rrc_idle:5G,not_restricted_rrc_idle:5G,"
                         + "not_restricted_rrc_con:5G");
-        sDefaults.putString(KEY_5G_ICON_DISPLAY_GRACE_PERIOD_STRING, "");
+        sDefaults.putString(KEY_5G_ICON_DISPLAY_GRACE_PERIOD_STRING,
+                "connected_mmwave,connected,10;connected_mmwave,any,10");
         sDefaults.putString(KEY_5G_ICON_DISPLAY_SECONDARY_GRACE_PERIOD_STRING, "");
         sDefaults.putInt(KEY_NR_ADVANCED_PCI_CHANGE_SECONDARY_TIMER_SECONDS_INT, 0);
         sDefaults.putInt(KEY_NR_ADVANCED_BANDS_SECONDARY_TIMER_SECONDS_INT, 0);
