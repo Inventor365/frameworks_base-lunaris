@@ -631,8 +631,14 @@ public class SettingsProvider extends ContentProvider {
         String callingPackage = getCallingPackage();
         if (callingPackage == null) return null;
 
-        if (callingPackage.startsWith("com.android.")
-                || callingPackage.startsWith("com.google.android.")) {
+        if (callingPackage.startsWith("com.android.")) {
+            return null;
+        }
+
+        if (callingPackage.startsWith("com.google.android.")
+                && !callingPackage.contains(".nbu.paisa.")
+                && !callingPackage.contains(".wallet")
+                && !callingPackage.contains(".pay")) {
             return null;
         }
 

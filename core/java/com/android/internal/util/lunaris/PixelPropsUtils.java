@@ -132,11 +132,10 @@ public final class PixelPropsUtils {
             "com.microsoft.android.smsorganizer",
             "com.nhs.online.nhsonline",
             "com.nothing.smartcenter",
-            "com.realme.link",
+            "com.realme.link"
             // in.startv.hotstar is intentionally not spoofed: with a Pixel identity
             // JioHotstar stops offering its Dolby (E-AC-3/Atmos) audio tracks,
             // even though the device exposes c2.dolby decoders.
-            "jp.id_credit_sp2.android"
     ));
 
     private static final Set<String> customGoogleCameraPackages = new HashSet<>(Arrays.asList(
