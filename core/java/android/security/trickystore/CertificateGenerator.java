@@ -55,6 +55,7 @@ import javax.security.auth.x500.X500Principal;
  */
 public final class CertificateGenerator {
     private static final String TAG = "CertificateGenerator";
+    private static final int MAX_ATTESTATION_CHALLENGE_SIZE = 128;
     
     public static final ASN1ObjectIdentifier ATTESTATION_OID = 
         new ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17");
@@ -122,6 +123,13 @@ public final class CertificateGenerator {
             int securityLevel,
             int uid) {
         
+        if (params.attestationChallenge != null &&
+            params.attestationChallenge.length > MAX_ATTESTATION_CHALLENGE_SIZE) {
+            Log.e(TAG, "Attestation challenge too large: " + params.attestationChallenge.length +
+                  " bytes (max " + MAX_ATTESTATION_CHALLENGE_SIZE + ")");
+            return null;
+        }
+
         KeyBoxManager keyboxManager = TrickyStoreService.getInstance().getKeyBoxManager();
         String algorithm = params.algorithm == 3 ? "EC" : "RSA";
         KeyBoxManager.KeyBox keybox = keyboxManager.getKeybox(algorithm);
@@ -195,6 +203,13 @@ public final class CertificateGenerator {
     }
 
     private static Extension buildAttestExtension(KeyGenParameters params, int securityLevel, int uid) {
+        if (params.attestationChallenge != null &&
+            params.attestationChallenge.length > MAX_ATTESTATION_CHALLENGE_SIZE) {
+            Log.e(TAG, "Attestation challenge too large: " + params.attestationChallenge.length +
+                  " bytes (max " + MAX_ATTESTATION_CHALLENGE_SIZE + ")");
+            return null;
+        }
+
         try {
             byte[] bootKey = AttestationUtils.getBootKey();
             byte[] bootHash = AttestationUtils.getBootHash();
@@ -207,45 +222,51 @@ public final class CertificateGenerator {
             };
             DERSequence rootOfTrust = new DERSequence(rootOfTrustElements);
 
-            ASN1EncodableVector teeEnforced = new ASN1EncodableVector();
+            java.util.TreeMap<Integer, ASN1Encodable> ordered = new java.util.TreeMap<>();
 
             ASN1Integer[] purposes = new ASN1Integer[params.purpose.size()];
             for (int i = 0; i < params.purpose.size(); i++) {
                 purposes[i] = new ASN1Integer(params.purpose.get(i));
             }
-            teeEnforced.add(new DERTaggedObject(true, 1, new DERSet(purposes)));
-            teeEnforced.add(new DERTaggedObject(true, 2, new ASN1Integer(params.algorithm)));
-            teeEnforced.add(new DERTaggedObject(true, 3, new ASN1Integer(params.keySize)));
+            ordered.put(1, new DERTaggedObject(true, 1, new DERSet(purposes)));
+            ordered.put(2, new DERTaggedObject(true, 2, new ASN1Integer(params.algorithm)));
+            ordered.put(3, new DERTaggedObject(true, 3, new ASN1Integer(params.keySize)));
 
             ASN1Integer[] digests = new ASN1Integer[params.digest.size()];
             for (int i = 0; i < params.digest.size(); i++) {
                 digests[i] = new ASN1Integer(params.digest.get(i));
             }
-            teeEnforced.add(new DERTaggedObject(true, 5, new DERSet(digests)));
+            ordered.put(5, new DERTaggedObject(true, 5, new DERSet(digests)));
 
-            teeEnforced.add(new DERTaggedObject(true, 10, new ASN1Integer(params.ecCurve)));
-            teeEnforced.add(new DERTaggedObject(true, 503, DERNull.INSTANCE));
-            teeEnforced.add(new DERTaggedObject(true, 702, new ASN1Integer(0)));
-            teeEnforced.add(new DERTaggedObject(true, 704, rootOfTrust));
-            teeEnforced.add(new DERTaggedObject(true, 705, new ASN1Integer(AttestationUtils.getOsVersion())));
-            teeEnforced.add(new DERTaggedObject(true, 706, new ASN1Integer(AttestationUtils.getPatchLevel(false))));
-            teeEnforced.add(new DERTaggedObject(true, 718, new ASN1Integer(AttestationUtils.getVendorPatchLevel(true))));
-            teeEnforced.add(new DERTaggedObject(true, 719, new ASN1Integer(AttestationUtils.getBootPatchLevel(true))));
+            ordered.put(10, new DERTaggedObject(true, 10, new ASN1Integer(params.ecCurve)));
+            ordered.put(503, new DERTaggedObject(true, 503, DERNull.INSTANCE));
+            ordered.put(702, new DERTaggedObject(true, 702, new ASN1Integer(0)));
+            ordered.put(704, new DERTaggedObject(true, 704, rootOfTrust));
+            ordered.put(705, new DERTaggedObject(true, 705, new ASN1Integer(AttestationUtils.getOsVersion())));
+            ordered.put(706, new DERTaggedObject(true, 706, new ASN1Integer(AttestationUtils.getPatchLevel(false))));
 
             if (params.brand != null) {
-                teeEnforced.add(new DERTaggedObject(true, 710, new DEROctetString(params.brand)));
+                ordered.put(710, new DERTaggedObject(true, 710, new DEROctetString(params.brand)));
             }
             if (params.device != null) {
-                teeEnforced.add(new DERTaggedObject(true, 711, new DEROctetString(params.device)));
+                ordered.put(711, new DERTaggedObject(true, 711, new DEROctetString(params.device)));
             }
             if (params.product != null) {
-                teeEnforced.add(new DERTaggedObject(true, 712, new DEROctetString(params.product)));
+                ordered.put(712, new DERTaggedObject(true, 712, new DEROctetString(params.product)));
             }
             if (params.manufacturer != null) {
-                teeEnforced.add(new DERTaggedObject(true, 716, new DEROctetString(params.manufacturer)));
+                ordered.put(716, new DERTaggedObject(true, 716, new DEROctetString(params.manufacturer)));
             }
             if (params.model != null) {
-                teeEnforced.add(new DERTaggedObject(true, 717, new DEROctetString(params.model)));
+                ordered.put(717, new DERTaggedObject(true, 717, new DEROctetString(params.model)));
+            }
+
+            ordered.put(718, new DERTaggedObject(true, 718, new ASN1Integer(AttestationUtils.getVendorPatchLevel(true))));
+            ordered.put(719, new DERTaggedObject(true, 719, new ASN1Integer(AttestationUtils.getBootPatchLevel(true))));
+
+            ASN1EncodableVector teeEnforced = new ASN1EncodableVector();
+            for (ASN1Encodable enc : ordered.values()) {
+                teeEnforced.add(enc);
             }
 
             ASN1EncodableVector softwareEnforced = new ASN1EncodableVector();

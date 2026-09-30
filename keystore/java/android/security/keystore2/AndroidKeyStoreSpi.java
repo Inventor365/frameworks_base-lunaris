@@ -219,24 +219,8 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
 
     @Override
     public Certificate engineGetCertificate(String alias) {
-        KeyEntryResponse response = getKeyMetadata(alias);
-
-        if (response == null) {
-            return null;
-        }
-
-        byte[] encodedCert = response.metadata.certificate;
-        if (encodedCert != null) {
-            return toCertificate(encodedCert);
-        }
-
-        encodedCert = response.metadata.certificateChain;
-        if (encodedCert != null) {
-            return toCertificate(encodedCert);
-        }
-
-        // This entry/alias does not contain a certificate.
-        return null;
+        Certificate[] chain = engineGetCertificateChain(alias);
+        return (chain != null && chain.length > 0) ? chain[0] : null;
     }
 
     static X509Certificate toCertificate(byte[] bytes) {

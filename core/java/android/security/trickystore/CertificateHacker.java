@@ -264,6 +264,14 @@ public final class CertificateHacker {
         }
     }
 
+    private static boolean isAllZeros(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return true;
+        for (byte b : bytes) {
+            if (b != 0) return false;
+        }
+        return true;
+    }
+
     private static Extension hackAttestExtension(
             ASN1Encodable originalRootOfTrust,
             ASN1EncodableVector vector,
@@ -276,20 +284,26 @@ public final class CertificateHacker {
             try {
                 ASN1Sequence rot = (ASN1Sequence) originalRootOfTrust;
                 if (rot.size() >= 1 && rot.getObjectAt(0) instanceof DEROctetString) {
-                    bootKey = ((DEROctetString) rot.getObjectAt(0)).getOctets();
+                    byte[] k = ((DEROctetString) rot.getObjectAt(0)).getOctets();
+                    if (!isAllZeros(k)) {
+                        bootKey = k;
+                    }
                 }
                 if (rot.size() >= 4 && rot.getObjectAt(3) instanceof DEROctetString) {
-                    bootHash = ((DEROctetString) rot.getObjectAt(3)).getOctets();
+                    byte[] h = ((DEROctetString) rot.getObjectAt(3)).getOctets();
+                    if (!isAllZeros(h)) {
+                        bootHash = h;
+                    }
                 }
             } catch (Exception e) {
                 Log.w(TAG, "Failed to extract root of trust elements from original", e);
             }
         }
 
-        if (bootKey == null) {
+        if (bootKey == null || isAllZeros(bootKey)) {
             bootKey = AttestationUtils.getBootKey();
         }
-        if (bootHash == null) {
+        if (bootHash == null || isAllZeros(bootHash)) {
             bootHash = AttestationUtils.getBootHash();
         }
 
@@ -301,17 +315,28 @@ public final class CertificateHacker {
         };
         DERSequence hackedRootOfTrust = new DERSequence(rootOfTrustElements);
 
-        vector.add(new DERTaggedObject(true, 718, 
-            new ASN1Integer(AttestationUtils.getVendorPatchLevel(true))));
-        vector.add(new DERTaggedObject(true, 719, 
-            new ASN1Integer(AttestationUtils.getBootPatchLevel(true))));
-        vector.add(new DERTaggedObject(true, 706, 
-            new ASN1Integer(AttestationUtils.getPatchLevel(false))));
-        vector.add(new DERTaggedObject(true, 705, 
+        // Emit in strictly ascending tag order as required by KeyMint
+        java.util.TreeMap<Integer, ASN1Encodable> ordered = new java.util.TreeMap<>();
+        for (int i = 0; i < vector.size(); i++) {
+            ASN1TaggedObject t = (ASN1TaggedObject) vector.get(i);
+            ordered.put(t.getTagNo(), t);
+        }
+        ordered.put(704, new DERTaggedObject(704, hackedRootOfTrust));
+        ordered.put(705, new DERTaggedObject(true, 705, 
             new ASN1Integer(AttestationUtils.getOsVersion())));
-        vector.add(new DERTaggedObject(704, hackedRootOfTrust));
+        ordered.put(706, new DERTaggedObject(true, 706, 
+            new ASN1Integer(AttestationUtils.getPatchLevel(false))));
+        ordered.put(718, new DERTaggedObject(true, 718, 
+            new ASN1Integer(AttestationUtils.getVendorPatchLevel(true))));
+        ordered.put(719, new DERTaggedObject(true, 719, 
+            new ASN1Integer(AttestationUtils.getBootPatchLevel(true))));
 
-        DERSequence hackedEnforced = new DERSequence(vector);
+        ASN1EncodableVector sortedVector = new ASN1EncodableVector();
+        for (ASN1Encodable enc : ordered.values()) {
+            sortedVector.add(enc);
+        }
+
+        DERSequence hackedEnforced = new DERSequence(sortedVector);
         originalEncodables[7] = hackedEnforced;
         DERSequence hackedSequence = new DERSequence(originalEncodables);
         DEROctetString hackedOctets = new DEROctetString(hackedSequence);

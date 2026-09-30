@@ -41,11 +41,59 @@ public final class AttestationUtils {
         return sTeeBroken;
     }
 
+    private static boolean isAllZeros(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return true;
+        for (byte b : bytes) {
+            if (b != 0) return false;
+        }
+        return true;
+    }
+
     public static byte[] getBootKey() {
-        if (sBootKey == null) {
-            sBootKey = loadOrCreatePersisted(BOOT_KEY_FILE);
+        if (sBootKey == null || isAllZeros(sBootKey)) {
+            sBootKey = getBootKeyFromProp();
+            if (sBootKey == null || isAllZeros(sBootKey)) {
+                sBootKey = getBootKeyFromKeybox();
+            }
+            if (sBootKey == null || isAllZeros(sBootKey)) {
+                sBootKey = loadOrCreatePersisted(BOOT_KEY_FILE);
+            }
         }
         return sBootKey;
+    }
+
+    private static byte[] getBootKeyFromKeybox() {
+        try {
+            KeyBoxManager keyBoxManager = TrickyStoreService.getInstance().getKeyBoxManager();
+            if (keyBoxManager == null || !keyBoxManager.hasKeyboxes()) {
+                return null;
+            }
+            KeyBoxManager.KeyBox keybox = keyBoxManager.getKeybox("EC");
+            if (keybox == null) {
+                keybox = keyBoxManager.getKeybox("RSA");
+            }
+            if (keybox == null || keybox.certificates == null || keybox.certificates.isEmpty()) {
+                return null;
+            }
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return digest.digest(keybox.certificates.get(0).getEncoded());
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to derive boot key from keybox issuer", e);
+            return null;
+        }
+    }
+
+    private static byte[] getBootKeyFromProp() {
+        String digest = SystemProperties.get("ro.boot.vbmeta.public_key_digest", null);
+        if (digest == null || digest.isEmpty() || digest.length() != 64) {
+            return null;
+        }
+        try {
+            return hexStringToByteArray(digest);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to parse vbmeta.public_key_digest", e);
+            return null;
+        }
     }
 
     public static byte[] getBootHash() {
