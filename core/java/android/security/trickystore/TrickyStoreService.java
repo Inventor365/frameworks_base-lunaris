@@ -18,6 +18,7 @@ package android.security.trickystore;
 
 import android.app.ActivityManager;
 import android.app.IActivityManager;
+import android.os.Looper;
 import android.os.RemoteException;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -352,6 +353,21 @@ public class TrickyStoreService {
 
     private void ensureTeeStatus() {
         if (mTeeBroken == null) {
+            if (Looper.getMainLooper() != null && Looper.getMainLooper().isCurrentThread()) {
+                // Do not block the UI thread on cryptographic hardware operations.
+                // Trigger check asynchronously.
+                new Thread(() -> {
+                    synchronized (this) {
+                        if (mTeeBroken == null) {
+                            mTeeBroken = checkTeeBroken();
+                            if (mTeeBroken) {
+                                AttestationUtils.setTeeBroken(true);
+                            }
+                        }
+                    }
+                }, "TrickyStore-TeeCheckAsync").start();
+                return;
+            }
             synchronized (this) {
                 if (mTeeBroken == null) {
                     mTeeBroken = checkTeeBroken();
@@ -528,10 +544,10 @@ public class TrickyStoreService {
 
     /**
      * Returns whether the TEE is broken, forcing the check if it hasn't run yet.
-     * Safe to call from any thread; the underlying check is synchronized.
+     * Safe to call from any thread; non-blocking on the main UI thread.
      */
     public boolean isTeeBroken() {
         ensureTeeStatus();
-        return Boolean.TRUE.equals(mTeeBroken);
+        return mTeeBroken != null ? mTeeBroken : AttestationUtils.isTeeBroken();
     }
 }
