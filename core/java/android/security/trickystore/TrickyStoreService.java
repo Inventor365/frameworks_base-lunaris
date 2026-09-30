@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @hide
@@ -52,6 +53,7 @@ public class TrickyStoreService {
     private final Map<String, Mode> mPackageModes = new ConcurrentHashMap<>();
 
     private volatile Boolean mTeeBroken = null;
+    private final AtomicBoolean mTeeCheckPending = new AtomicBoolean(false);
     private volatile long mLastRevocationCheckMs = 0L;
     private volatile long mLastTargetsRefreshMs = 0L;
     private static final long TARGETS_REFRESH_COOLDOWN_MS = 5_000L;
@@ -97,15 +99,11 @@ public class TrickyStoreService {
         refreshTargets();
         refreshKeyBox();
         refreshPatchLevel();
-        // Eagerly warm up TEE status in the background so isTeeBroken() never
-        // returns a stale null when the settings UI reads it at startup.
-        new Thread(() -> {
-            try {
-                ensureTeeStatus();
-            } catch (Exception e) {
-                Log.w(TAG, "Background TEE check failed", e);
-            }
-        }, "TrickyStore-TeeInit").start();
+        // Do not probe the TEE here. Every app process that touches AndroidKeyStore
+        // gets here, and the probe generates an attested key, which costs a KeyMint
+        // round trip plus an RKPD key per app. The TEE status is only needed for
+        // AUTO-mode targets, and needHack()/needGenerate()/isTeeBroken() resolve it
+        // lazily.
         Log.i(TAG, "TrickyStoreService initialized");
     }
 
@@ -355,15 +353,22 @@ public class TrickyStoreService {
         if (mTeeBroken == null) {
             if (Looper.getMainLooper() != null && Looper.getMainLooper().isCurrentThread()) {
                 // Do not block the UI thread on cryptographic hardware operations.
-                // Trigger check asynchronously.
+                // Trigger check asynchronously, at most one at a time.
+                if (!mTeeCheckPending.compareAndSet(false, true)) {
+                    return;
+                }
                 new Thread(() -> {
-                    synchronized (this) {
-                        if (mTeeBroken == null) {
-                            mTeeBroken = checkTeeBroken();
-                            if (mTeeBroken) {
-                                AttestationUtils.setTeeBroken(true);
+                    try {
+                        synchronized (this) {
+                            if (mTeeBroken == null) {
+                                mTeeBroken = checkTeeBroken();
+                                if (mTeeBroken) {
+                                    AttestationUtils.setTeeBroken(true);
+                                }
                             }
                         }
+                    } finally {
+                        mTeeCheckPending.set(false);
                     }
                 }, "TrickyStore-TeeCheckAsync").start();
                 return;
@@ -488,12 +493,11 @@ public class TrickyStoreService {
     public boolean needHack(int callingUid, String[] packages) {
         if (packages == null) return false;
         maybeRefreshTargets();
-        ensureTeeStatus();
         for (String pkg : packages) {
             Mode mode = mPackageModes.get(pkg);
             if (mode == Mode.SKIP) continue;
             if (mode == Mode.LEAF_HACK) return true;
-            if (mode == Mode.AUTO && !mTeeBroken) return true;
+            if (mode == Mode.AUTO && !resolveTeeBroken()) return true;
         }
         return false;
     }
@@ -501,14 +505,25 @@ public class TrickyStoreService {
     public boolean needGenerate(int callingUid, String[] packages) {
         if (packages == null) return false;
         maybeRefreshTargets();
-        ensureTeeStatus();
         for (String pkg : packages) {
             Mode mode = mPackageModes.get(pkg);
             if (mode == Mode.SKIP) continue;
             if (mode == Mode.GENERATE) return true;
-            if (mode == Mode.AUTO && mTeeBroken) return true;
+            if (mode == Mode.AUTO && resolveTeeBroken()) return true;
         }
         return false;
+    }
+
+    /**
+     * Resolves the TEE status for an AUTO-mode target. Packages that are not
+     * targets never reach this, so they never pay for the probe. On the main
+     * thread the probe runs asynchronously and mTeeBroken can still be null,
+     * so fall back to the last known state instead of unboxing null.
+     */
+    private boolean resolveTeeBroken() {
+        ensureTeeStatus();
+        Boolean broken = mTeeBroken;
+        return broken != null ? broken : AttestationUtils.isTeeBroken();
     }
 
     public boolean isPackageSkipped(String[] packages) {
@@ -547,7 +562,6 @@ public class TrickyStoreService {
      * Safe to call from any thread; non-blocking on the main UI thread.
      */
     public boolean isTeeBroken() {
-        ensureTeeStatus();
-        return mTeeBroken != null ? mTeeBroken : AttestationUtils.isTeeBroken();
+        return resolveTeeBroken();
     }
 }
