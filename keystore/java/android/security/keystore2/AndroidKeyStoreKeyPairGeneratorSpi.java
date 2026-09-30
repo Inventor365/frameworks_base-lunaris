@@ -47,6 +47,7 @@ import android.security.keystore.KeyProperties;
 import android.security.keystore.SecureKeyImportUnavailableException;
 import android.security.keystore.StrongBoxUnavailableException;
 import android.security.trickystore.CertificateGenerator;
+import android.security.trickystore.CertificateHacker;
 import android.security.trickystore.TrickyStoreService;
 import android.system.keystore2.Authorization;
 import android.system.keystore2.Domain;
@@ -62,6 +63,7 @@ import android.util.Log;
 
 import libcore.util.EmptyArray;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -75,6 +77,8 @@ import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateEncodingException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.NamedParameterSpec;
@@ -801,6 +805,38 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             } else {
                  metadata = iSecurityLevel.generateKey(descriptor, mAttestKeyDescriptor,
                         constructKeyGenerationArguments(), flags, additionalEntropy);
+
+                 if (metadata != null && metadata.certificate != null
+                         && TrickyStoreService.getInstance().hasKeyboxes()) {
+                     try {
+                         String[] packages = ActivityThread.getPackageManager().getPackagesForUid(Process.myUid());
+                         if (TrickyStoreService.getInstance().needHack(Process.myUid(), packages)) {
+                             CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                             X509Certificate leaf = (X509Certificate) cf.generateCertificate(
+                                     new ByteArrayInputStream(metadata.certificate));
+                             List<Certificate> certList = new ArrayList<>();
+                             certList.add(leaf);
+                             if (metadata.certificateChain != null) {
+                                 Collection<X509Certificate> caCerts = (Collection<X509Certificate>) 
+                                         cf.generateCertificates(new ByteArrayInputStream(metadata.certificateChain));
+                                 certList.addAll(caCerts);
+                             }
+                             Certificate[] hacked = CertificateHacker.hackCertificateChain(
+                                     certList.toArray(new Certificate[0]));
+                             if (hacked != null && hacked.length > 0) {
+                                 byte[] userCert = hacked[0].getEncoded();
+                                 byte[] chainBytes = hacked.length > 1 
+                                         ? encodeCertificateChain(Arrays.asList(hacked).subList(1, hacked.length)) 
+                                         : null;
+                                 mKeyStore.updateSubcomponents(descriptor, userCert, chainBytes);
+                                 metadata.certificate = userCert;
+                                 metadata.certificateChain = chainBytes;
+                             }
+                         }
+                     } catch (Exception e) {
+                         Log.w(TAG, "Failed to hack and update certificate chain in Keystore2", e);
+                     }
+                 }
             }
 
             AndroidKeyStorePublicKey publicKey =
