@@ -28,7 +28,7 @@ public final class AttestationUtils {
     private static final File HBK_FILE = new File(CONFIG_DIR, "hbk");
 
     private static byte[] sBootKey;
-    private static byte[] sBootHash;
+    private static volatile byte[] sBootHash;
     private static volatile boolean sTeeBroken = false;
 
     private AttestationUtils() {}
@@ -132,15 +132,34 @@ public final class AttestationUtils {
             setVbmetaDigestProp(bytesToHex(hash));
             return;
         }
-        Log.i(TAG, "initBootHash: No prop or disk state, attempting TEE extraction");
-        hash = extractBootHashFromTee();
-        if (hash != null) {
-            sBootHash = hash;
-            writePersisted(HBK_FILE, hash);
-            Log.i(TAG, "initBootHash: TEE extraction successful, setting prop");
-            setVbmetaDigestProp(bytesToHex(hash));
-        } else {
-            Log.e(TAG, "initBootHash: Failed to extract boot hash from TEE");
+        // TEE extraction generates an attested key, which blocks on keystore2, KeyMint
+        // and RKPD. SystemServer calls this from startBootstrapServices(), with the
+        // watchdog armed and RKPD not yet running, so never extract inline.
+        Log.i(TAG, "initBootHash: No prop or disk state, deferring TEE extraction");
+        new Thread(() -> {
+            waitForBootCompleted();
+            byte[] teeHash = extractBootHashFromTee();
+            if (teeHash != null) {
+                sBootHash = teeHash;
+                writePersisted(HBK_FILE, teeHash);
+                Log.i(TAG, "initBootHash: TEE extraction successful, setting prop");
+                setVbmetaDigestProp(bytesToHex(teeHash));
+            } else {
+                Log.e(TAG, "initBootHash: Failed to extract boot hash from TEE");
+            }
+        }, "TrickyStore-BootHash").start();
+    }
+
+    private static void waitForBootCompleted() {
+        // RKPD, which keystore2 needs for attested keys, is an app and cannot be
+        // reached during early boot. Give up after two minutes and try anyway.
+        for (int i = 0; i < 120 && !SystemProperties.getBoolean("sys.boot_completed", false);
+                i++) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                return;
+            }
         }
     }
 
@@ -153,7 +172,9 @@ public final class AttestationUtils {
         }
     }
 
-    private static byte[] extractBootHashFromTee() {
+    // Synchronized so the deferred initBootHash() thread and getBootHash() never
+    // generate and delete the shared alias concurrently.
+    private static synchronized byte[] extractBootHashFromTee() {
         try {
             String alias = "trickystore_attestation_key";
             
