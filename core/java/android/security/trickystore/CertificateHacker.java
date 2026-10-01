@@ -132,7 +132,7 @@ public final class CertificateHacker {
                     : "SHA256withECDSA";
             ContentSigner signer = createBCSigner(sigAlg, privKey);
 
-            Extension hackedExtension = hackAttestExtension(originalRootOfTrust, vector, encodables, packages);
+            Extension hackedExtension = hackAttestExtension(originalRootOfTrust, vector, encodables);
             builder.addExtension(hackedExtension);
 
             for (Object oid : leafHolder.getExtensions().getExtensionOIDs()) {
@@ -279,8 +279,7 @@ public final class CertificateHacker {
     private static Extension hackAttestExtension(
             ASN1Encodable originalRootOfTrust,
             ASN1EncodableVector vector,
-            ASN1Encodable[] originalEncodables,
-            String[] packages) throws Exception {
+            ASN1Encodable[] originalEncodables) throws Exception {
 
         byte[] bootKey = null;
         byte[] bootHash = null;
@@ -330,11 +329,11 @@ public final class CertificateHacker {
         ordered.put(705, new DERTaggedObject(true, 705, 
             new ASN1Integer(AttestationUtils.getOsVersion())));
         ordered.put(706, new DERTaggedObject(true, 706, 
-            new ASN1Integer(AttestationUtils.getPatchLevel(false, packages))));
+            new ASN1Integer(AttestationUtils.getPatchLevel(false))));
         ordered.put(718, new DERTaggedObject(true, 718, 
-            new ASN1Integer(AttestationUtils.getVendorPatchLevel(true, packages))));
+            new ASN1Integer(AttestationUtils.getVendorPatchLevel(true))));
         ordered.put(719, new DERTaggedObject(true, 719, 
-            new ASN1Integer(AttestationUtils.getBootPatchLevel(true, packages))));
+            new ASN1Integer(AttestationUtils.getBootPatchLevel(true))));
 
         ASN1EncodableVector sortedVector = new ASN1EncodableVector();
         for (ASN1Encodable enc : ordered.values()) {
