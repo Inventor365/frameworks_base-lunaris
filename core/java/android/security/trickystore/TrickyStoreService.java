@@ -33,10 +33,10 @@ import java.security.KeyStore;
 import java.security.spec.ECGenParameterSpec;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -47,10 +47,11 @@ public class TrickyStoreService {
 
     private static TrickyStoreService sInstance;
 
-    private final Set<String> mHackPackages = ConcurrentHashMap.newKeySet();
-    private final Set<String> mGeneratePackages = ConcurrentHashMap.newKeySet();
-    private final Set<String> mSkipPackages = ConcurrentHashMap.newKeySet();
-    private final Map<String, Mode> mPackageModes = new ConcurrentHashMap<>();
+    // Replaced as a whole on every refresh and never edited in place, so a thread
+    // that reads it while another thread refreshes sees the old list or the new
+    // one, never an empty or half-parsed one.
+    private volatile Map<String, Mode> mPackageModes = Collections.emptyMap();
+    private volatile String mLastTargetsContent = null;
 
     private volatile Boolean mTeeBroken = null;
     private final AtomicBoolean mTeeCheckPending = new AtomicBoolean(false);
@@ -127,31 +128,35 @@ public class TrickyStoreService {
 
     public void refreshTargets() {
         String content = fetchFromAms(am -> am.getSpoofTrickyStoreTarget());
-        mHackPackages.clear();
-        mGeneratePackages.clear();
-        mSkipPackages.clear();
-        mPackageModes.clear();
-
         if (content == null || content.isEmpty()) {
+            mPackageModes = Collections.emptyMap();
+            mLastTargetsContent = null;
+            return;
+        }
+        // Called every 5 s from every process that generates or reads keys. Only
+        // parse (and log) when the list actually changed.
+        if (content.equals(mLastTargetsContent)) {
             return;
         }
 
         String trimmed = content.trim();
+        Map<String, Mode> modes = new HashMap<>();
         try {
             if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-                parseTargetsJson(trimmed);
+                parseTargetsJson(trimmed, modes);
             } else {
-                parseTargetsText(trimmed);
+                parseTargetsText(trimmed, modes);
             }
-            Log.i(TAG, "Updated target packages: hack=" + mHackPackages +
-                  ", generate=" + mGeneratePackages + ", skip=" + mSkipPackages +
-                  ", modes=" + mPackageModes);
+            Log.i(TAG, "Updated target packages: modes=" + modes);
         } catch (Exception e) {
+            // As before, keep whatever parsed before the error.
             Log.e(TAG, "Failed to parse target packages", e);
         }
+        mPackageModes = Collections.unmodifiableMap(modes);
+        mLastTargetsContent = content;
     }
 
-    private void parseTargetsText(String content) {
+    private static void parseTargetsText(String content, Map<String, Mode> modes) {
         for (String raw : content.split("\n")) {
             String line = raw.trim();
             if (line.isEmpty() || line.startsWith("#")) {
@@ -159,24 +164,19 @@ public class TrickyStoreService {
             }
 
             if (line.endsWith("!")) {
-                String pkg = line.substring(0, line.length() - 1).trim();
-                mGeneratePackages.add(pkg);
-                mPackageModes.put(pkg, Mode.GENERATE);
+                modes.put(line.substring(0, line.length() - 1).trim(), Mode.GENERATE);
             } else if (line.endsWith("?")) {
-                String pkg = line.substring(0, line.length() - 1).trim();
-                mHackPackages.add(pkg);
-                mPackageModes.put(pkg, Mode.LEAF_HACK);
+                modes.put(line.substring(0, line.length() - 1).trim(), Mode.LEAF_HACK);
             } else if (line.endsWith("-")) {
-                String pkg = line.substring(0, line.length() - 1).trim();
-                mSkipPackages.add(pkg);
-                mPackageModes.put(pkg, Mode.SKIP);
+                modes.put(line.substring(0, line.length() - 1).trim(), Mode.SKIP);
             } else {
-                mPackageModes.put(line, Mode.AUTO);
+                modes.put(line, Mode.AUTO);
             }
         }
     }
 
-    private void parseTargetsJson(String content) throws IOException {
+    private static void parseTargetsJson(String content, Map<String, Mode> modes)
+            throws IOException {
         try (JsonReader reader = new JsonReader(new StringReader(content))) {
             reader.beginArray();
             while (reader.hasNext()) {
@@ -201,10 +201,7 @@ public class TrickyStoreService {
                 } catch (IllegalArgumentException e) {
                     mode = Mode.AUTO;
                 }
-                mPackageModes.put(pkg, mode);
-                if (mode == Mode.LEAF_HACK) mHackPackages.add(pkg);
-                if (mode == Mode.GENERATE) mGeneratePackages.add(pkg);
-                if (mode == Mode.SKIP) mSkipPackages.add(pkg);
+                modes.put(pkg, mode);
             }
             reader.endArray();
         }
@@ -493,8 +490,9 @@ public class TrickyStoreService {
     public boolean needHack(int callingUid, String[] packages) {
         if (packages == null) return false;
         maybeRefreshTargets();
+        Map<String, Mode> modes = mPackageModes;
         for (String pkg : packages) {
-            Mode mode = mPackageModes.get(pkg);
+            Mode mode = modes.get(pkg);
             if (mode == Mode.SKIP) continue;
             if (mode == Mode.LEAF_HACK) return true;
             if (mode == Mode.AUTO && !resolveTeeBroken()) return true;
@@ -505,8 +503,9 @@ public class TrickyStoreService {
     public boolean needGenerate(int callingUid, String[] packages) {
         if (packages == null) return false;
         maybeRefreshTargets();
+        Map<String, Mode> modes = mPackageModes;
         for (String pkg : packages) {
-            Mode mode = mPackageModes.get(pkg);
+            Mode mode = modes.get(pkg);
             if (mode == Mode.SKIP) continue;
             if (mode == Mode.GENERATE) return true;
             if (mode == Mode.AUTO && resolveTeeBroken()) return true;
@@ -529,8 +528,9 @@ public class TrickyStoreService {
     public boolean isPackageSkipped(String[] packages) {
         if (packages == null) return false;
         maybeRefreshTargets();
+        Map<String, Mode> modes = mPackageModes;
         for (String pkg : packages) {
-            if (mSkipPackages.contains(pkg)) return true;
+            if (modes.get(pkg) == Mode.SKIP) return true;
         }
         return false;
     }
