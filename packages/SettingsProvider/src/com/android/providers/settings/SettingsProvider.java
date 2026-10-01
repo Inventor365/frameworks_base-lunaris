@@ -642,6 +642,12 @@ public class SettingsProvider extends ContentProvider {
             return null;
         }
 
+        if ("adb_enabled".equals(name)
+                || "development_settings_enabled".equals(name)
+                || "adb_wifi_enabled".equals(name)) {
+            return "0";
+        }
+
         String settings = null;
         try {
             AxSandboxManager sandboxManager =

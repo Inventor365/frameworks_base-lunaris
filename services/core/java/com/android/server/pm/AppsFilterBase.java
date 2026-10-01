@@ -333,6 +333,7 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
      */
     private static final java.util.Set<String> ROOT_PACKAGES = java.util.Set.of(
             "com.topjohnwu.magisk",
+            "io.github.vvb2060.magisk",
             "eu.chainfire.supersu",
             "com.koushikdutta.superuser",
             "com.noshufou.android.su",
@@ -340,6 +341,12 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
             "com.thirdparty.superuser",
             "com.yellowes.su",
             "me.weishu.kernelsu",
+            "com.rifsxd.ksunext",
+            "com.sukisu.ultra",
+            "com.resukisu.resukisu",
+            "io.github.a13e300.ksuwebui",
+            "me.bmax.apatch",
+            "com.bmax.apatch",
             "com.kingroot.kinguser",
             "com.kingo.root",
             "com.smedialink.oneclickroot",
@@ -348,6 +355,10 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
             "com.devadvance.rootcloak",
             "com.devadvance.rootcloakplus",
             "de.robv.android.xposed.installer",
+            "org.lsposed.manager",
+            "org.lsposed.lspatch",
+            "com.solohsu.android.edxp.manager",
+            "org.meowcat.edxposed.manager",
             "com.saurik.substrate",
             "com.amphoras.hidemyroot",
             "com.amphoras.hidemyrootadfree",
@@ -358,13 +369,22 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
             "com.dimonvideo.luckypatcher",
             "com.chelpus.lackypatch",
             "com.chelpus.luckypatcher",
-            "com.solohsu.android.edxp.manager",
-            "org.meowcat.edxposed.manager",
-            "org.lsposed.manager",
+            "lucky.patcher",
+            "bin.mt.termex",
+            "bin.mt.plus",
+            "bin.mt.plus.canary",
             "cc.madkite.freedom",
             "com.ramdroid.appquarantine",
             "com.ramdroid.appquarantinepro",
-            "com.zachspong.temprootremovejb"
+            "com.zachspong.temprootremovejb",
+            "com.tsng.hidemyapplist",
+            "com.tsng.pzyhrx.hma",
+            "com.topmiaohan.hidebllist",
+            "zako.zako.zako",
+            "es.chiteroman.bootloaderspoofer",
+            "io.github.a13e300.tricky_store",
+            "io.github.a13e300.tricky_store.debug",
+            "com.xayah.databackup.foss"
     );
 
     private static final String PACKAGE_SYSTEMUI = "com.android.systemui";

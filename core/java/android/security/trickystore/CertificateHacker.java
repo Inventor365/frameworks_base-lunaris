@@ -63,6 +63,10 @@ public final class CertificateHacker {
     }
 
     public static Certificate[] hackCertificateChain(Certificate[] chain) {
+        return hackCertificateChain(chain, null);
+    }
+
+    public static Certificate[] hackCertificateChain(Certificate[] chain, String[] packages) {
         if (chain == null || chain.length == 0) {
             return chain;
         }
@@ -128,7 +132,7 @@ public final class CertificateHacker {
                     : "SHA256withECDSA";
             ContentSigner signer = createBCSigner(sigAlg, privKey);
 
-            Extension hackedExtension = hackAttestExtension(originalRootOfTrust, vector, encodables);
+            Extension hackedExtension = hackAttestExtension(originalRootOfTrust, vector, encodables, packages);
             builder.addExtension(hackedExtension);
 
             for (Object oid : leafHolder.getExtensions().getExtensionOIDs()) {
@@ -275,7 +279,8 @@ public final class CertificateHacker {
     private static Extension hackAttestExtension(
             ASN1Encodable originalRootOfTrust,
             ASN1EncodableVector vector,
-            ASN1Encodable[] originalEncodables) throws Exception {
+            ASN1Encodable[] originalEncodables,
+            String[] packages) throws Exception {
 
         byte[] bootKey = null;
         byte[] bootHash = null;
@@ -325,11 +330,11 @@ public final class CertificateHacker {
         ordered.put(705, new DERTaggedObject(true, 705, 
             new ASN1Integer(AttestationUtils.getOsVersion())));
         ordered.put(706, new DERTaggedObject(true, 706, 
-            new ASN1Integer(AttestationUtils.getPatchLevel(false))));
+            new ASN1Integer(AttestationUtils.getPatchLevel(false, packages))));
         ordered.put(718, new DERTaggedObject(true, 718, 
-            new ASN1Integer(AttestationUtils.getVendorPatchLevel(true))));
+            new ASN1Integer(AttestationUtils.getVendorPatchLevel(true, packages))));
         ordered.put(719, new DERTaggedObject(true, 719, 
-            new ASN1Integer(AttestationUtils.getBootPatchLevel(true))));
+            new ASN1Integer(AttestationUtils.getBootPatchLevel(true, packages))));
 
         ASN1EncodableVector sortedVector = new ASN1EncodableVector();
         for (ASN1Encodable enc : ordered.values()) {
