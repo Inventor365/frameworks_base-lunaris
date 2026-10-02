@@ -145,7 +145,20 @@ public final class AttestationUtils {
                 Log.i(TAG, "initBootHash: TEE extraction successful, setting prop");
                 setVbmetaDigestProp(bytesToHex(teeHash));
             } else {
-                Log.e(TAG, "initBootHash: Failed to extract boot hash from TEE");
+                // TEE extraction failed (e.g. StrongBox/RKP not provisioned on this
+                // device). Never leave ro.boot.vbmeta.digest empty — an absent digest
+                // on an otherwise-locked device is itself a verified-boot signal. Fall
+                // back to a stable, persisted hash, which is the same value getBootHash()
+                // hands target attestations, so the property and the attested
+                // RootOfTrust stay coherent.
+                byte[] fallback = readPersisted(HBK_FILE);
+                if (fallback == null) {
+                    fallback = generateRandomBytes(32);
+                    writePersisted(HBK_FILE, fallback);
+                }
+                sBootHash = fallback;
+                Log.w(TAG, "initBootHash: TEE extraction failed, using stable persisted boot hash");
+                setVbmetaDigestProp(bytesToHex(fallback));
             }
         }, "TrickyStore-BootHash").start();
     }
