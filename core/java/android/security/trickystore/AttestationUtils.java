@@ -4,6 +4,18 @@ import android.os.Build;
 import android.os.SystemProperties;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+
+import com.android.internal.org.bouncycastle.asn1.ASN1Integer;
+import com.android.internal.org.bouncycastle.asn1.ASN1Sequence;
+import com.android.internal.org.bouncycastle.asn1.x509.Extension;
+import com.android.internal.org.bouncycastle.cert.X509CertificateHolder;
+
+import java.security.KeyPairGenerator;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.security.spec.ECGenParameterSpec;
+import java.util.concurrent.atomic.AtomicBoolean;
 import android.util.Log;
 
 import com.android.internal.org.bouncycastle.asn1.*;
@@ -278,7 +290,31 @@ public final class AttestationUtils {
         }
     }
 
+    // The attestation/KeyMint version baked into a generated (keybox) chain must match
+    // what the device's REAL KeyMint HAL reports, not the OS SDK level. A vendor HAL
+    // frequently lags the OS (e.g. an Android 16 device still shipping IKeyMintDevice@3
+    // -> attestationVersion 300), and detectors cross-check the attested version against
+    // the VINTF-declared HAL version. Detect the real values once from a genuine
+    // attestation and cache them; fall back to the SDK guess only if detection fails.
+    private static volatile int sAttestVersion = -1;
+    private static volatile int sKeymasterVersion = -1;
+    private static final AtomicBoolean sVersionProbeRan = new AtomicBoolean(false);
+
     public static int getAttestVersion() {
+        if (sAttestVersion > 0) return sAttestVersion;
+        detectKeyMintVersions();
+        return sAttestVersion > 0 ? sAttestVersion : attestVersionFromSdk();
+    }
+
+    public static int getKeymasterVersion() {
+        if (sKeymasterVersion > 0) return sKeymasterVersion;
+        detectKeyMintVersions();
+        if (sKeymasterVersion > 0) return sKeymasterVersion;
+        int attestVersion = attestVersionFromSdk();
+        return attestVersion == 4 ? 41 : attestVersion;
+    }
+
+    private static int attestVersionFromSdk() {
         switch (Build.VERSION.SDK_INT) {
             case Build.VERSION_CODES.Q:
             case Build.VERSION_CODES.R:
@@ -296,9 +332,55 @@ public final class AttestationUtils {
         }
     }
 
-    public static int getKeymasterVersion() {
-        int attestVersion = getAttestVersion();
-        return attestVersion == 4 ? 41 : attestVersion;
+    // Generates one genuine attested key (on the hack-excluded alias, so it is NOT
+    // routed through the keybox/import path and does not recurse into here), reads the
+    // real attestationVersion / keymasterVersion from its attestation extension, caches
+    // them, and deletes the key. Best-effort and runs at most once.
+    private static void detectKeyMintVersions() {
+        if (!sVersionProbeRan.compareAndSet(false, true)) return;
+        final String alias = "trickystore_attestation_key";
+        try {
+            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance(
+                    KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
+            kpg.initialize(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+                    .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
+                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    .setAttestationChallenge(new byte[] {0x74, 0x72, 0x69, 0x63})
+                    .build());
+            kpg.generateKeyPair();
+            Certificate[] chain = ks.getCertificateChain(alias);
+            if (chain != null && chain.length > 0 && chain[0] instanceof X509Certificate) {
+                parseAndCacheVersions((X509Certificate) chain[0]);
+            }
+            try {
+                ks.deleteEntry(alias);
+            } catch (Exception ignored) {
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "KeyMint version probe failed; using SDK-based attestation version", t);
+        }
+    }
+
+    private static void parseAndCacheVersions(X509Certificate leaf) {
+        try {
+            if (leaf.getExtensionValue(CertificateGenerator.ATTESTATION_OID.getId()) == null) {
+                return;
+            }
+            X509CertificateHolder holder = new X509CertificateHolder(leaf.getEncoded());
+            Extension extension = holder.getExtension(CertificateGenerator.ATTESTATION_OID);
+            ASN1Sequence seq = ASN1Sequence.getInstance(extension.getExtnValue().getOctets());
+            // KeyDescription ::= SEQUENCE {
+            //   attestationVersion [0], attestationSecurityLevel [1], keymasterVersion [2], ... }
+            int av = ASN1Integer.getInstance(seq.getObjectAt(0)).getValue().intValue();
+            int kv = ASN1Integer.getInstance(seq.getObjectAt(2)).getValue().intValue();
+            if (av > 0) sAttestVersion = av;
+            if (kv > 0) sKeymasterVersion = kv;
+            Log.i(TAG, "Detected KeyMint attestationVersion=" + av + " keymasterVersion=" + kv);
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to parse KeyMint attestation versions", t);
+        }
     }
 
     public static int getPatchLevel(boolean isLong) {
