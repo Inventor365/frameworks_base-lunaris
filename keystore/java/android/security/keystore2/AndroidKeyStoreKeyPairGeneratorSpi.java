@@ -715,8 +715,20 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                 !"trickystore_attestation_key".equals(mEntryAlias)) {
                 try {
                     String[] packages = ActivityThread.getPackageManager().getPackagesForUid(Process.myUid());
-                    if (TrickyStoreService.getInstance()
-                            .needGenerate(Process.myUid(), packages)) {
+                    TrickyStoreService ts = TrickyStoreService.getInstance();
+                    if (ts.needGenerate(Process.myUid(), packages)) {
+                        needGenerate = true;
+                    } else if (mSpec.getAttestationChallenge() != null
+                            && !mSpec.isStrongBoxBacked()
+                            && ts.shouldHackAttestation(Process.myUid(), packages)) {
+                        // Route in-scope attested TEE keys through the software-keypair +
+                        // keybox-chain path (importKey), which issues NO generateKey Binder
+                        // transaction. A detector that captures the raw generateKey response
+                        // and diffs it against getKeyEntry (generate-vs-getKeyEntry leaf
+                        // divergence) then has no generate material to compare, while the
+                        // persisted chain stays locked/verified and identical across every
+                        // read path. StrongBox requests keep the real-keygen path (import to
+                        // StrongBox is constrained) and are covered by the persist fallback.
                         needGenerate = true;
                     }
                 } catch (Exception e) {
