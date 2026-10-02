@@ -47,7 +47,6 @@ import android.security.keystore.KeyProperties;
 import android.security.keystore.SecureKeyImportUnavailableException;
 import android.security.keystore.StrongBoxUnavailableException;
 import android.security.trickystore.CertificateGenerator;
-import android.security.trickystore.CertificateHacker;
 import android.security.trickystore.TrickyStoreService;
 import android.system.keystore2.Authorization;
 import android.system.keystore2.Domain;
@@ -63,7 +62,6 @@ import android.util.Log;
 
 import libcore.util.EmptyArray;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -77,7 +75,6 @@ import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateEncodingException;
-import java.security.cert.CertificateFactory;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.NamedParameterSpec;
@@ -716,19 +713,13 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                 try {
                     String[] packages = ActivityThread.getPackageManager().getPackagesForUid(Process.myUid());
                     TrickyStoreService ts = TrickyStoreService.getInstance();
+                    // Only apps the user explicitly targets (TrickyStore list, GENERATE /
+                    // AUTO-with-broken-TEE) are routed through the keybox path. Every other
+                    // app keeps its genuine hardware attestation. Blanket-hacking all apps
+                    // forced our (possibly revoked/softbanned) keybox onto real attestation
+                    // consumers — GPay tokenization, UPI/NPCI integrity SDKs — which verify
+                    // the chain online and reject a revoked keybox as "uncertified"/"rooted".
                     if (ts.needGenerate(Process.myUid(), packages)) {
-                        needGenerate = true;
-                    } else if (mSpec.getAttestationChallenge() != null
-                            && !mSpec.isStrongBoxBacked()
-                            && ts.shouldHackAttestation(Process.myUid(), packages)) {
-                        // Route in-scope attested TEE keys through the software-keypair +
-                        // keybox-chain path (importKey), which issues NO generateKey Binder
-                        // transaction. A detector that captures the raw generateKey response
-                        // and diffs it against getKeyEntry (generate-vs-getKeyEntry leaf
-                        // divergence) then has no generate material to compare, while the
-                        // persisted chain stays locked/verified and identical across every
-                        // read path. StrongBox requests keep the real-keygen path (import to
-                        // StrongBox is constrained) and are covered by the persist fallback.
                         needGenerate = true;
                     }
                 } catch (Exception e) {
@@ -814,13 +805,12 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                 mKeyStore.updateSubcomponents(descriptor, userCert, chainBytes);
                 
             } else {
+                 // Real hardware keygen. The genuine attestation is left intact: only
+                 // target-listed apps are hacked, and they take the needGenerate path
+                 // above. Non-targeted apps (banking/payment integrity SDKs, GPay) get
+                 // their real chain, matching upstream TrickyStore and Axion/Evolution.
                  metadata = iSecurityLevel.generateKey(descriptor, mAttestKeyDescriptor,
                         constructKeyGenerationArguments(), flags, additionalEntropy);
-                 // Reassign so the KeyPair we return is built from the persisted (hacked)
-                 // certificate — otherwise the generate-time leaf stays genuine while every
-                 // later read is hacked, which detectors flag as generate-vs-getKeyEntry
-                 // divergence.
-                 metadata = persistHackedAttestationIfNeeded(descriptor, metadata);
             }
 
             AndroidKeyStorePublicKey publicKey =
@@ -857,74 +847,6 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                 }
             }
         }
-    }
-
-    /**
-     * Rewrites a freshly generated key's hardware attestation with a keybox-rooted,
-     * locked/verified chain and PERSISTS it into Keystore2 via updateSubcomponents, so
-     * every subsequent read returns the identical hacked chain: the Java
-     * getCertificateChain path AND the raw IKeystoreService.getKeyEntry Binder path.
-     *
-     * Hacking only at read time (AndroidKeyStoreSpi.engineGetCertificateChain) left raw
-     * getKeyEntry serving the genuine, unlocked RootOfTrust, which attestation-reading
-     * detectors consume directly and also diff against the Java chain ("leaf and chain
-     * diverged"). Persisting at generation closes both. It is idempotent
-     * (CertificateHacker no-ops a chain already issued by the keybox) and best-effort:
-     * any failure leaves the genuine, functional key in place.
-     */
-    private KeyMetadata persistHackedAttestationIfNeeded(KeyDescriptor descriptor,
-            KeyMetadata metadata) {
-        if (metadata == null || metadata.certificate == null
-                || metadata.certificateChain == null) {
-            // No attestation chain to rewrite (unattested key).
-            return metadata;
-        }
-        if ("TrickyStoreTeeCheck".equals(mEntryAlias)
-                || "trickystore_attestation_key".equals(mEntryAlias)) {
-            return metadata;
-        }
-        try {
-            String[] packages =
-                    ActivityThread.getPackageManager().getPackagesForUid(Process.myUid());
-            if (!TrickyStoreService.getInstance()
-                    .shouldHackAttestation(Process.myUid(), packages)) {
-                return metadata;
-            }
-
-            CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            List<Certificate> chain = new ArrayList<>();
-            chain.add(cf.generateCertificate(new ByteArrayInputStream(metadata.certificate)));
-            for (Certificate c : cf.generateCertificates(
-                    new ByteArrayInputStream(metadata.certificateChain))) {
-                chain.add(c);
-            }
-
-            Certificate[] input = chain.toArray(new Certificate[0]);
-            Certificate[] hacked = CertificateHacker.hackCertificateChain(input, packages);
-            // hackCertificateChain returns the same array reference when it makes no
-            // change (no attestation extension, no keybox, or already hacked).
-            if (hacked == null || hacked == input || hacked.length == 0) {
-                return metadata;
-            }
-
-            byte[] hackedLeaf = hacked[0].getEncoded();
-            byte[] hackedChain = hacked.length > 1
-                    ? encodeCertificateChain(Arrays.asList(hacked).subList(1, hacked.length))
-                    : null;
-            mKeyStore.updateSubcomponents(descriptor, hackedLeaf, hackedChain);
-            Log.i(TAG, "Persisted keybox attestation for " + mEntryAlias);
-
-            // Re-read so the caller builds the returned KeyPair from the persisted
-            // (hacked) certificate, keeping generateKey consistent with getKeyEntry.
-            KeyEntryResponse refreshed = mKeyStore.getKeyEntry(descriptor);
-            if (refreshed != null && refreshed.metadata != null
-                    && refreshed.metadata.certificate != null) {
-                return refreshed.metadata;
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Failed to persist hacked attestation; keeping genuine chain", e);
-        }
-        return metadata;
     }
 
     private byte[] encodeCertificateChain(List<Certificate> chain)
