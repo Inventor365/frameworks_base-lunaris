@@ -804,7 +804,11 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             } else {
                  metadata = iSecurityLevel.generateKey(descriptor, mAttestKeyDescriptor,
                         constructKeyGenerationArguments(), flags, additionalEntropy);
-                 persistHackedAttestationIfNeeded(descriptor, metadata);
+                 // Reassign so the KeyPair we return is built from the persisted (hacked)
+                 // certificate — otherwise the generate-time leaf stays genuine while every
+                 // later read is hacked, which detectors flag as generate-vs-getKeyEntry
+                 // divergence.
+                 metadata = persistHackedAttestationIfNeeded(descriptor, metadata);
             }
 
             AndroidKeyStorePublicKey publicKey =
@@ -856,23 +860,23 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
      * (CertificateHacker no-ops a chain already issued by the keybox) and best-effort:
      * any failure leaves the genuine, functional key in place.
      */
-    private void persistHackedAttestationIfNeeded(KeyDescriptor descriptor,
+    private KeyMetadata persistHackedAttestationIfNeeded(KeyDescriptor descriptor,
             KeyMetadata metadata) {
         if (metadata == null || metadata.certificate == null
                 || metadata.certificateChain == null) {
             // No attestation chain to rewrite (unattested key).
-            return;
+            return metadata;
         }
         if ("TrickyStoreTeeCheck".equals(mEntryAlias)
                 || "trickystore_attestation_key".equals(mEntryAlias)) {
-            return;
+            return metadata;
         }
         try {
             String[] packages =
                     ActivityThread.getPackageManager().getPackagesForUid(Process.myUid());
             if (!TrickyStoreService.getInstance()
                     .shouldHackAttestation(Process.myUid(), packages)) {
-                return;
+                return metadata;
             }
 
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
@@ -888,7 +892,7 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             // hackCertificateChain returns the same array reference when it makes no
             // change (no attestation extension, no keybox, or already hacked).
             if (hacked == null || hacked == input || hacked.length == 0) {
-                return;
+                return metadata;
             }
 
             byte[] hackedLeaf = hacked[0].getEncoded();
@@ -897,9 +901,18 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                     : null;
             mKeyStore.updateSubcomponents(descriptor, hackedLeaf, hackedChain);
             Log.i(TAG, "Persisted keybox attestation for " + mEntryAlias);
+
+            // Re-read so the caller builds the returned KeyPair from the persisted
+            // (hacked) certificate, keeping generateKey consistent with getKeyEntry.
+            KeyEntryResponse refreshed = mKeyStore.getKeyEntry(descriptor);
+            if (refreshed != null && refreshed.metadata != null
+                    && refreshed.metadata.certificate != null) {
+                return refreshed.metadata;
+            }
         } catch (Exception e) {
             Log.w(TAG, "Failed to persist hacked attestation; keeping genuine chain", e);
         }
+        return metadata;
     }
 
     private byte[] encodeCertificateChain(List<Certificate> chain)
