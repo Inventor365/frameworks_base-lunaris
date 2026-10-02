@@ -117,6 +117,13 @@ public final class CertificateHacker {
             X509CertificateHolder issuerHolder = new X509CertificateHolder(
                 certificates.get(0).getEncoded());
 
+            // Idempotency: if the leaf is already issued by this keybox, the chain was
+            // already hacked (e.g. persisted into Keystore2 at key generation). Re-signing
+            // it would corrupt the chain, so return it untouched.
+            if (leafHolder.getIssuer().equals(issuerHolder.getSubject())) {
+                return chain;
+            }
+
             X509v3CertificateBuilder builder = new X509v3CertificateBuilder(
                 issuerHolder.getSubject(),
                 leafHolder.getSerialNumber(),

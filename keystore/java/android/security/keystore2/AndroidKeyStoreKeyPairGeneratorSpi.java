@@ -47,6 +47,7 @@ import android.security.keystore.KeyProperties;
 import android.security.keystore.SecureKeyImportUnavailableException;
 import android.security.keystore.StrongBoxUnavailableException;
 import android.security.trickystore.CertificateGenerator;
+import android.security.trickystore.CertificateHacker;
 import android.security.trickystore.TrickyStoreService;
 import android.system.keystore2.Authorization;
 import android.system.keystore2.Domain;
@@ -62,6 +63,7 @@ import android.util.Log;
 
 import libcore.util.EmptyArray;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -75,6 +77,7 @@ import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateEncodingException;
+import java.security.cert.CertificateFactory;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.NamedParameterSpec;
@@ -801,6 +804,7 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             } else {
                  metadata = iSecurityLevel.generateKey(descriptor, mAttestKeyDescriptor,
                         constructKeyGenerationArguments(), flags, additionalEntropy);
+                 persistHackedAttestationIfNeeded(descriptor, metadata);
             }
 
             AndroidKeyStorePublicKey publicKey =
@@ -839,7 +843,66 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
         }
     }
 
-    private byte[] encodeCertificateChain(List<Certificate> chain) 
+    /**
+     * Rewrites a freshly generated key's hardware attestation with a keybox-rooted,
+     * locked/verified chain and PERSISTS it into Keystore2 via updateSubcomponents, so
+     * every subsequent read returns the identical hacked chain: the Java
+     * getCertificateChain path AND the raw IKeystoreService.getKeyEntry Binder path.
+     *
+     * Hacking only at read time (AndroidKeyStoreSpi.engineGetCertificateChain) left raw
+     * getKeyEntry serving the genuine, unlocked RootOfTrust, which attestation-reading
+     * detectors consume directly and also diff against the Java chain ("leaf and chain
+     * diverged"). Persisting at generation closes both. It is idempotent
+     * (CertificateHacker no-ops a chain already issued by the keybox) and best-effort:
+     * any failure leaves the genuine, functional key in place.
+     */
+    private void persistHackedAttestationIfNeeded(KeyDescriptor descriptor,
+            KeyMetadata metadata) {
+        if (metadata == null || metadata.certificate == null
+                || metadata.certificateChain == null) {
+            // No attestation chain to rewrite (unattested key).
+            return;
+        }
+        if ("TrickyStoreTeeCheck".equals(mEntryAlias)
+                || "trickystore_attestation_key".equals(mEntryAlias)) {
+            return;
+        }
+        try {
+            String[] packages =
+                    ActivityThread.getPackageManager().getPackagesForUid(Process.myUid());
+            if (!TrickyStoreService.getInstance()
+                    .shouldHackAttestation(Process.myUid(), packages)) {
+                return;
+            }
+
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            List<Certificate> chain = new ArrayList<>();
+            chain.add(cf.generateCertificate(new ByteArrayInputStream(metadata.certificate)));
+            for (Certificate c : cf.generateCertificates(
+                    new ByteArrayInputStream(metadata.certificateChain))) {
+                chain.add(c);
+            }
+
+            Certificate[] input = chain.toArray(new Certificate[0]);
+            Certificate[] hacked = CertificateHacker.hackCertificateChain(input, packages);
+            // hackCertificateChain returns the same array reference when it makes no
+            // change (no attestation extension, no keybox, or already hacked).
+            if (hacked == null || hacked == input || hacked.length == 0) {
+                return;
+            }
+
+            byte[] hackedLeaf = hacked[0].getEncoded();
+            byte[] hackedChain = hacked.length > 1
+                    ? encodeCertificateChain(Arrays.asList(hacked).subList(1, hacked.length))
+                    : null;
+            mKeyStore.updateSubcomponents(descriptor, hackedLeaf, hackedChain);
+            Log.i(TAG, "Persisted keybox attestation for " + mEntryAlias);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to persist hacked attestation; keeping genuine chain", e);
+        }
+    }
+
+    private byte[] encodeCertificateChain(List<Certificate> chain)
             throws CertificateEncodingException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         for (Certificate cert : chain) {

@@ -19,7 +19,9 @@ package android.security.trickystore;
 import android.app.ActivityManager;
 import android.app.IActivityManager;
 import android.os.Looper;
+import android.os.Process;
 import android.os.RemoteException;
+import android.os.UserHandle;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.JsonReader;
@@ -523,6 +525,24 @@ public class TrickyStoreService {
         ensureTeeStatus();
         Boolean broken = mTeeBroken;
         return broken != null ? broken : AttestationUtils.isTeeBroken();
+    }
+
+    /**
+     * Whether this caller's hardware key attestation should be rewritten with a
+     * keybox-rooted, locked/verified chain at key-generation time.
+     *
+     * Unlike needHack()/needGenerate(), which drive the per-target root policy, this
+     * is opt-out: every third-party app that requests attestation gets a consistent
+     * stock-looking chain so that detectors reading the RootOfTrust (including via the
+     * raw IKeystoreService.getKeyEntry path, which the Java read-time hack never
+     * covered) can no longer see the genuine unlocked boot state or observe a
+     * leaf/chain divergence. Apps explicitly marked SKIP and system/privileged uids
+     * are left untouched, and nothing happens without a loaded keybox.
+     */
+    public boolean shouldHackAttestation(int callingUid, String[] packages) {
+        if (!hasKeyboxes()) return false;
+        if (isPackageSkipped(packages)) return false;
+        return UserHandle.getAppId(callingUid) >= Process.FIRST_APPLICATION_UID;
     }
 
     public boolean isPackageSkipped(String[] packages) {
