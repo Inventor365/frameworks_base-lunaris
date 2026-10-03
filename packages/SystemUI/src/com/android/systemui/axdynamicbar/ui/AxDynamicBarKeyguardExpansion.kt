@@ -21,12 +21,9 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
@@ -75,17 +72,29 @@ constructor(
     val isExpanded: StateFlow<Boolean> =
         combine(_intent, canShow) { intent, show -> intent && show }
             .distinctUntilChanged()
-            .stateIn(applicationScope, SharingStarted.Lazily, false)
+            .stateIn(applicationScope, SharingStarted.Eagerly, false)
 
-    private val _collapseSettled = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val collapseSettled: SharedFlow<Unit> = _collapseSettled.asSharedFlow()
+    private val _isContentVisible = MutableStateFlow(false)
 
-    fun notifyCollapseSettled() {
-        _collapseSettled.tryEmit(Unit)
+    /**
+     * Whether the keyguard host must keep its expanded layout: the panel is expanded or its exit
+     * animation is still on screen. Dozing drops it at once so screen off never waits on a frame.
+     */
+    val isHostExpanded: StateFlow<Boolean> =
+        combine(isExpanded, _isContentVisible, interactor.isDozing) { expanded, visible, dozing ->
+            expanded || (visible && !dozing)
+        }
+            .distinctUntilChanged()
+            .stateIn(applicationScope, SharingStarted.Eagerly, false)
+
+    fun setContentVisible(visible: Boolean) {
+        _isContentVisible.value = visible
     }
 
     init {
-        interactor.isOnKeyguard
+        // An expansion lives only while it can be shown. Doze/screen off, bouncer, shade, QS,
+        // leaving keyguard or losing the chip end it instead of pausing it until they go away.
+        canShow
             .onEach { if (!it) collapse() }
             .launchIn(applicationScope)
     }
@@ -100,6 +109,6 @@ constructor(
     }
 
     fun toggle() {
-        if (_intent.value) collapse() else expand()
+        if (isExpanded.value) collapse() else expand()
     }
 }

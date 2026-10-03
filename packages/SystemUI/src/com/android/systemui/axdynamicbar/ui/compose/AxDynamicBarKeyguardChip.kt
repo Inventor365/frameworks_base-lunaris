@@ -206,10 +206,13 @@ fun AxDynamicBarKeyguardChip(
 
         val expandedVisibleState = remember { MutableTransitionState(false) }
         expandedVisibleState.targetState = isKeyguardChipVisible && isKeyguardExpanded && state != null
-        LaunchedEffect(expandedVisibleState.isIdle, expandedVisibleState.currentState) {
-            if (expandedVisibleState.isIdle && !expandedVisibleState.currentState) {
-                viewModel.keyguardExpansion.notifyCollapseSettled()
-            }
+        val isExpandedContentVisible =
+            !(expandedVisibleState.isIdle && !expandedVisibleState.currentState)
+        LaunchedEffect(isExpandedContentVisible) {
+            viewModel.keyguardExpansion.setContentVisible(isExpandedContentVisible)
+        }
+        DisposableEffect(Unit) {
+            onDispose { viewModel.keyguardExpansion.setContentVisible(false) }
         }
         AnimatedVisibility(
             visibleState = expandedVisibleState,
