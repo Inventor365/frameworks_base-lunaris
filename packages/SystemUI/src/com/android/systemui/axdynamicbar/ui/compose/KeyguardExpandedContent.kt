@@ -126,6 +126,7 @@ internal fun KeyguardExpandedContent(
 
     val view = LocalView.current
     val touchSlop = LocalViewConfiguration.current.touchSlop
+    val currentOnCollapse by rememberUpdatedState(onCollapse)
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -138,7 +139,7 @@ internal fun KeyguardExpandedContent(
                 }
                 false
             }
-            .pointerInput(onCollapse, touchSlop) {
+            .pointerInput(touchSlop) {
                 awaitEachGesture {
                     var downEvent = awaitPointerEvent(PointerEventPass.Final)
                     while (downEvent.changes.none { it.changedToDownIgnoreConsumed() }) {
@@ -158,7 +159,7 @@ internal fun KeyguardExpandedContent(
                                 val dy = change.position.y - downPosition.y
                                 if (dx * dx + dy * dy <= touchSlop * touchSlop) {
                                     change.consume()
-                                    onCollapse()
+                                    currentOnCollapse()
                                 }
                             }
                             break
@@ -169,7 +170,7 @@ internal fun KeyguardExpandedContent(
         contentAlignment = Alignment.Center,
     ) {
         when (event) {
-            is IslandEvent.Media -> KeyguardMediaPanel(event, interactor)
+            is IslandEvent.Media -> KeyguardMediaPanel(event, interactor, onCollapse)
             is IslandEvent.Timer -> KeyguardTimerPanel(event, interactor)
             is IslandEvent.Stopwatch -> KeyguardStopwatchPanel(event, interactor)
             is IslandEvent.AudioRecording -> KeyguardAudioRecordingPanel(event, interactor)
@@ -260,10 +261,16 @@ private fun TonalBanner(
 }
 
 @Composable
-private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActions) {
+private fun KeyguardMediaPanel(
+    event: IslandEvent.Media,
+    interactor: IslandActions,
+    onCollapse: () -> Unit,
+) {
     val colors = rememberMediaColors(event)
     val motionScheme = MaterialTheme.motionScheme
 
+    // The card fills the whole expanded area, so it is its own collapse target: tapping the
+    // artwork or title returns to the pill. Controls below consume their own taps.
     Box(
         modifier = Modifier
             .widthIn(max = ExpandedMaxWidth)
@@ -275,7 +282,7 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = {},
+                onClick = onCollapse,
             ),
     ) {
         AnimatedContent(
@@ -431,7 +438,13 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, CardBorderBrush, ShapeCard),
+                    .border(1.dp, CardBorderBrush, ShapeCard)
+                    // Near-misses around the transport controls must not collapse the player.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {},
+                    ),
                 shape = ShapeCard,
                 color = Color.Black.copy(alpha = 0.22f),
             ) {

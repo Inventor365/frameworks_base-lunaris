@@ -74,6 +74,8 @@ constructor(
     private var bindHandle: DisposableHandle? = null
     private var expansionHandle: DisposableHandle? = null
     private var enforceAction: Runnable? = null
+    // Views this section hid; only these are shown again on collapse.
+    private val hiddenViews = mutableSetOf<View>()
 
     override fun addViews(constraintLayout: ConstraintLayout) {
         val composeView = AxComposeView(context).apply { id = chipViewId }
@@ -103,10 +105,10 @@ constructor(
             repeatOnLifecycle(Lifecycle.State.CREATED) {
                 val scope = this
                 scope.launch {
-                    viewModel.keyguardExpansion.collapseSettled.collect {
-                        if (!viewModel.keyguardExpansion.isExpanded.value) {
+                    viewModel.keyguardExpansion.isHostExpanded.collect { hostExpanded ->
+                        if (!hostExpanded) {
                             applyCollapsedLp(composeView, viewModel.isLowUdfps.value)
-                            setHiddenViewsVisibility(constraintLayout, View.VISIBLE)
+                            restoreHiddenViews(animate = true)
                         }
                     }
                 }
@@ -148,7 +150,7 @@ constructor(
         rebindPreDrawAction(constraintLayout, expanded)
         TransitionManager.endTransitions(constraintLayout)
         if (expanded) {
-            setHiddenViewsVisibility(constraintLayout, View.INVISIBLE)
+            hideViews(constraintLayout)
             applyExpandedLp(composeView)
         }
     }
@@ -165,44 +167,57 @@ constructor(
     private fun hiddenTargets(constraintLayout: ConstraintLayout): List<View> =
         HIDDEN_VIEW_IDS.mapNotNull { constraintLayout.rootView.findViewById<View>(it) }
 
-    private fun setHiddenViewsVisibility(constraintLayout: ConstraintLayout, visibility: Int) {
-        hiddenTargets(constraintLayout).forEach { v ->
+    private fun hideViews(constraintLayout: ConstraintLayout) {
+        // Views that are GONE/INVISIBLE belong to their own controllers and are left alone.
+        hiddenTargets(constraintLayout).filter { it.visibility == View.VISIBLE }.forEach { v ->
+            hiddenViews.add(v)
             v.animate().cancel()
-            if (visibility == View.VISIBLE) {
-                if (v.visibility != View.VISIBLE) {
-                    v.alpha = 0f
-                    v.visibility = View.VISIBLE
+            v.animate()
+                .alpha(0f)
+                .setDuration(HIDDEN_VIEWS_FADE_DURATION_END_MS)
+                .withEndAction {
+                    if (v.visibility == View.VISIBLE) v.visibility = View.INVISIBLE
                 }
+                .start()
+        }
+        WallpaperDepthUtils.get()?.hideDepthWallpaper()
+    }
+
+    private fun restoreHiddenViews(animate: Boolean) {
+        hiddenViews.forEach { v ->
+            v.animate().cancel()
+            // Still hidden by us; if the owner set GONE meanwhile, it stays that way.
+            if (v.visibility == View.INVISIBLE) {
+                if (animate) v.alpha = 0f
+                v.visibility = View.VISIBLE
+            }
+            if (v.visibility != View.VISIBLE) return@forEach
+            if (animate) {
                 v.animate()
                     .alpha(1f)
                     .setDuration(HIDDEN_VIEWS_FADE_DURATION_START_MS)
                     .withEndAction(null)
                     .start()
             } else {
-                v.animate()
-                    .alpha(0f)
-                    .setDuration(HIDDEN_VIEWS_FADE_DURATION_END_MS)
-                    .withEndAction {
-                        if (v.visibility != visibility) v.visibility = visibility
-                    }
-                    .start()
+                v.alpha = 1f
             }
         }
-        WallpaperDepthUtils.get()?.let {
-            if (visibility == View.INVISIBLE) it.hideDepthWallpaper()
-            else it.updateDepthWallpaperVisibility()
-        }
+        hiddenViews.clear()
+        WallpaperDepthUtils.get()?.updateDepthWallpaperVisibility()
     }
 
     private fun enforceHidden(constraintLayout: ConstraintLayout) {
         hiddenTargets(constraintLayout).forEach { v ->
-            if (v.visibility != View.INVISIBLE) v.visibility = View.INVISIBLE
+            if (v.visibility == View.VISIBLE) {
+                hiddenViews.add(v)
+                v.visibility = View.INVISIBLE
+            }
         }
         WallpaperDepthUtils.get()?.hideDepthWallpaper()
     }
 
     override fun applyConstraints(constraintSet: ConstraintSet) {
-        val expanded = viewModel.isKeyguardExpanded.value
+        val expanded = viewModel.keyguardExpansion.isHostExpanded.value
         val lowUdfps = viewModel.isLowUdfps.value
         val bottomProtectionPx = EXPANDED_BOTTOM_PROTECTION_DP.dpToPx(context)
         val chipAboveLockPx = CHIP_ABOVE_LOCK_MARGIN_DP.dpToPx(context)
@@ -286,6 +301,7 @@ constructor(
         TransitionManager.endTransitions(constraintLayout)
         enforceAction?.let { ScrimUtils.get().removeKeyguardPreDrawAction(it) }
         enforceAction = null
+        restoreHiddenViews(animate = false)
         WallpaperDepthUtils.get()?.setDynamicBarExpanded(false)
         MediaViewController.getOrNull()?.setExpandedMusicOpen(false)
         expansionHandle?.dispose()

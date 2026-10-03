@@ -211,6 +211,9 @@ class MediaViewController @Inject constructor(
     private fun refreshListening() {
         val shouldListen = featureEnabled || expandedMusicOpen
         if (shouldListen && !listening) {
+            // Bouncer/dismiss callbacks were missed while detached. Attaching only happens with the
+            // keyguard up and no bouncer (or from Settings), so a cached true here is stale.
+            bouncerShowingOrKeyguardDismissing = false
             MediaSessionManager.get().addListener(this)
             ScrimUtils.get().addListener(this)
             listening = true

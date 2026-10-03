@@ -85,7 +85,10 @@ constructor(
     private var hideOverlayJob: Job? = null
 
     fun init() {
-        viewModel.interactor.onCollapseRequested = { viewModel.statusBarExpansion.collapse() }
+        viewModel.interactor.onCollapseRequested = {
+            viewModel.statusBarExpansion.collapse()
+            viewModel.keyguardExpansion.collapse()
+        }
         viewModel.interactor.onFocusableRequested = { focusable -> setOverlayFocusable(focusable) }
 
         val needsOverlay =
