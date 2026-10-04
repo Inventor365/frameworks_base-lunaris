@@ -133,9 +133,21 @@ public class TrickyStoreService {
     // only its currently-visible, selected rows and can silently drop GMS when system
     // apps are hidden during a "select all" — can never leave them untargeted. A user
     // can still opt out explicitly by marking the package SKIP ("-"), which is honored.
+    // Mirrors the de-facto standard FIXED_TARGETS set from the Specter module
+    // (dpejoh/specter) — the packages that must always keep a hacked attestation
+    // for the Play Integrity + Wallet pipeline to work. DroidGuard runs under the
+    // com.google.android.gms uid; GSF/Play Store/Wallet/GPay and the framework
+    // ("android") round out the chain Google cross-checks for STRONG.
     private static final String[] DEFAULT_ATTESTATION_TARGETS = {
+        "android",
         "com.google.android.gms",
+        "com.google.android.gsf",
         "com.android.vending",
+        "com.google.android.contactkeys",
+        "com.google.android.ims",
+        "com.google.android.safetycore",
+        "com.google.android.apps.walletnfcrel",
+        "com.google.android.apps.nbu.paisa.user",
     };
 
     private static void applyDefaultTargets(Map<String, Mode> modes) {
