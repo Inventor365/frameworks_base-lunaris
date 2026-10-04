@@ -1,9 +1,12 @@
 package com.android.systemui.keyguard.ui.view.layout.sections
 
+import android.animation.ValueAnimator
 import android.content.Context
+import android.os.SystemClock
 import android.transition.TransitionManager
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import com.android.axion.compose.host.AxComposeView
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
@@ -22,7 +25,6 @@ import com.android.systemui.res.R
 import com.android.systemui.media.MediaViewController
 import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.KeyguardIndicationController
-import com.android.systemui.util.ScrimUtils
 import com.android.systemui.util.WallpaperDepthUtils
 import javax.inject.Inject
 import kotlinx.coroutines.DisposableHandle
@@ -73,9 +75,13 @@ constructor(
     private val chipViewId = R.id.ax_dynamic_bar_keyguard_chip
     private var bindHandle: DisposableHandle? = null
     private var expansionHandle: DisposableHandle? = null
-    private var enforceAction: Runnable? = null
+    private var enforceListener: ViewTreeObserver.OnPreDrawListener? = null
+    private var enforceObserver: ViewTreeObserver? = null
+    private var enforceTargets: List<View> = emptyList()
     // Views this section hid; only these are shown again on collapse.
     private val hiddenViews = mutableSetOf<View>()
+    // The enforcer leaves views alone until the hide fade has had its time.
+    private var enforceAfterUptimeMs = 0L
 
     override fun addViews(constraintLayout: ConstraintLayout) {
         val composeView = AxComposeView(context).apply { id = chipViewId }
@@ -156,20 +162,33 @@ constructor(
     }
 
     private fun rebindPreDrawAction(constraintLayout: ConstraintLayout, expanded: Boolean) {
-        enforceAction?.let { ScrimUtils.get().removeKeyguardPreDrawAction(it) }
-        enforceAction = if (expanded) {
-            Runnable { enforceHidden(constraintLayout) }.also {
-                ScrimUtils.get().addKeyguardPreDrawAction(it)
-            }
-        } else null
+        removePreDrawAction()
+        if (!expanded) return
+        // ScrimUtils' keyguard pre-draw hook is never attached, so watch the view tree directly.
+        val listener = ViewTreeObserver.OnPreDrawListener {
+            enforceHidden()
+            true
+        }
+        enforceObserver = constraintLayout.viewTreeObserver.apply { addOnPreDrawListener(listener) }
+        enforceListener = listener
+    }
+
+    private fun removePreDrawAction() {
+        val listener = enforceListener ?: return
+        enforceObserver?.takeIf { it.isAlive }?.removeOnPreDrawListener(listener)
+        enforceObserver = null
+        enforceListener = null
     }
 
     private fun hiddenTargets(constraintLayout: ConstraintLayout): List<View> =
         HIDDEN_VIEW_IDS.mapNotNull { constraintLayout.rootView.findViewById<View>(it) }
 
     private fun hideViews(constraintLayout: ConstraintLayout) {
+        enforceTargets = hiddenTargets(constraintLayout)
+        enforceAfterUptimeMs = SystemClock.uptimeMillis() +
+            (HIDDEN_VIEWS_FADE_DURATION_END_MS * ValueAnimator.getDurationScale()).toLong()
         // Views that are GONE/INVISIBLE belong to their own controllers and are left alone.
-        hiddenTargets(constraintLayout).filter { it.visibility == View.VISIBLE }.forEach { v ->
+        enforceTargets.filter { it.visibility == View.VISIBLE }.forEach { v ->
             hiddenViews.add(v)
             v.animate().cancel()
             v.animate()
@@ -203,17 +222,21 @@ constructor(
             }
         }
         hiddenViews.clear()
+        enforceTargets = emptyList()
         WallpaperDepthUtils.get()?.updateDepthWallpaperVisibility()
     }
 
-    private fun enforceHidden(constraintLayout: ConstraintLayout) {
-        hiddenTargets(constraintLayout).forEach { v ->
+    // Owners (clock, smartspace, Now Playing, depth wallpaper...) may show their views again while
+    // expanded; keep them hidden until collapse restores them.
+    private fun enforceHidden() {
+        WallpaperDepthUtils.get()?.hideDepthWallpaper()
+        if (SystemClock.uptimeMillis() < enforceAfterUptimeMs) return
+        enforceTargets.forEach { v ->
             if (v.visibility == View.VISIBLE) {
                 hiddenViews.add(v)
                 v.visibility = View.INVISIBLE
             }
         }
-        WallpaperDepthUtils.get()?.hideDepthWallpaper()
     }
 
     override fun applyConstraints(constraintSet: ConstraintSet) {
@@ -299,8 +322,7 @@ constructor(
 
     override fun removeViews(constraintLayout: ConstraintLayout) {
         TransitionManager.endTransitions(constraintLayout)
-        enforceAction?.let { ScrimUtils.get().removeKeyguardPreDrawAction(it) }
-        enforceAction = null
+        removePreDrawAction()
         restoreHiddenViews(animate = false)
         WallpaperDepthUtils.get()?.setDynamicBarExpanded(false)
         MediaViewController.getOrNull()?.setExpandedMusicOpen(false)
