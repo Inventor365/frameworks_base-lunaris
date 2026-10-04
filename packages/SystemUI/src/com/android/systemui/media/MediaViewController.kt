@@ -42,6 +42,7 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.media.MediaScrimState.STATE_SCRIM_HIDDEN
 import com.android.systemui.media.MediaScrimState.STATE_SCRIM_VISIBLE
 import com.android.systemui.util.ScrimUtils
+import com.android.systemui.util.WallpaperDepthUtils
 
 import kotlinx.coroutines.*
 import kotlin.math.*
@@ -336,6 +337,9 @@ class MediaViewController @Inject constructor(
         cancelScrimAnim()
         updateMediaArt()
         setupMediaFilter()
+        // Doze callbacks that keep the elevation current are missed while detached (the expanded
+        // music pill detaches at doze start), so a stale Z would draw the art above the keyguard.
+        updateMediaElevation()
         
         val targetAlpha = getTargetAlpha()
         
@@ -350,6 +354,7 @@ class MediaViewController @Inject constructor(
                 .start()
         }
         isAlbumArtVisible = true
+        WallpaperDepthUtils.get()?.updateDepthWallpaperVisibility()
     }
 
     private fun getTargetAlpha(): Float {
@@ -543,9 +548,12 @@ class MediaViewController @Inject constructor(
         mediaScrim.setRenderEffect(null)
         mediaScrim.colorFilter = null
         mediaScrim.visibility = View.GONE
+        mediaScrim.translationZ = 0f
         scrimState = STATE_SCRIM_HIDDEN
         isAlbumArtVisible = false
         dismissingKeyguard = false
+        // Depth wallpaper is gated on albumArtVisible() and nothing else re-checks it on change.
+        WallpaperDepthUtils.get()?.updateDepthWallpaperVisibility()
     }
 
     fun cleanupResources(animate: Boolean) {
