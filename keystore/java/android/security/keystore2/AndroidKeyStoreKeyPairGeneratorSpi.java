@@ -47,6 +47,7 @@ import android.security.keystore.KeyProperties;
 import android.security.keystore.SecureKeyImportUnavailableException;
 import android.security.keystore.StrongBoxUnavailableException;
 import android.security.trickystore.CertificateGenerator;
+import android.security.trickystore.CertificateHacker;
 import android.security.trickystore.TrickyStoreService;
 import android.system.keystore2.Authorization;
 import android.system.keystore2.Domain;
@@ -62,6 +63,7 @@ import android.util.Log;
 
 import libcore.util.EmptyArray;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -75,6 +77,7 @@ import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateEncodingException;
+import java.security.cert.CertificateFactory;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.NamedParameterSpec;
@@ -805,12 +808,18 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                 mKeyStore.updateSubcomponents(descriptor, userCert, chainBytes);
                 
             } else {
-                 // Real hardware keygen. The genuine attestation is left intact: only
-                 // target-listed apps are hacked, and they take the needGenerate path
-                 // above. Non-targeted apps (banking/payment integrity SDKs, GPay) get
-                 // their real chain, matching upstream TrickyStore and Axion/Evolution.
+                 // Real hardware keygen (keeps the hardware-backed key, which STRONG and
+                 // Wallet require). For target-listed apps, persist the keybox-hacked chain
+                 // into Keystore2 so the raw IKeystoreService.getKeyEntry path returns the
+                 // same locked/verified chain as getCertificateChain. Google Wallet's
+                 // tap-and-pay provisioning (and other native attestation readers) read via
+                 // getKeyEntry, not the Java getCertificateChain hook, and otherwise see the
+                 // genuine UNLOCKED chain -> "device can't be set up to pay contactless".
+                 // Untargeted apps are left genuine; the key type is never changed (unlike
+                 // the GENERATE/software path), so nothing that needs a hardware key breaks.
                  metadata = iSecurityLevel.generateKey(descriptor, mAttestKeyDescriptor,
                         constructKeyGenerationArguments(), flags, additionalEntropy);
+                 metadata = persistHackedAttestationIfNeeded(descriptor, metadata);
             }
 
             AndroidKeyStorePublicKey publicKey =
@@ -847,6 +856,83 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                 }
             }
         }
+    }
+
+    /**
+     * For a target-listed app, rewrites a freshly generated key's hardware attestation
+     * with the keybox-rooted, locked/verified chain and PERSISTS it into Keystore2 via
+     * updateSubcomponents, so every read path returns it: the Java getCertificateChain
+     * path AND the raw IKeystoreService.getKeyEntry Binder path.
+     *
+     * getCertificateChain alone (AndroidKeyStoreSpi) is enough for Play Integrity (GMS
+     * DroidGuard reads there) but NOT for Google Wallet tap-and-pay provisioning, which
+     * reads the payment key's attestation via getKeyEntry and otherwise sees the genuine
+     * unlocked RootOfTrust ("device can't be set up to pay contactless"). Persisting at
+     * generation closes that gap universally for any native attestation reader.
+     *
+     * Scoped to needHack() (the user/auto target list) exactly like the read-path hook,
+     * so untargeted apps are untouched. The key stays hardware-backed (we only rewrite
+     * the certificate blobs, never the key), so STRONG and Wallet keep a real TEE key.
+     * Best-effort: any failure leaves the genuine, functional key in place.
+     */
+    private KeyMetadata persistHackedAttestationIfNeeded(KeyDescriptor descriptor,
+            KeyMetadata metadata) {
+        if (metadata == null || metadata.certificate == null
+                || metadata.certificateChain == null) {
+            return metadata;
+        }
+        if ("TrickyStoreTeeCheck".equals(mEntryAlias)
+                || "trickystore_attestation_key".equals(mEntryAlias)) {
+            return metadata;
+        }
+        // Only persist for third-party app uids. The read-path hook already covers
+        // system/privileged callers (incl. the "android" target); persisting a
+        // Keystore2 rewrite from system_server at boot is needless risk, and the
+        // raw-getKeyEntry readers we care about (Wallet, banking) are app uids.
+        if (Process.myUid() < Process.FIRST_APPLICATION_UID) {
+            return metadata;
+        }
+        try {
+            String[] packages =
+                    ActivityThread.getPackageManager().getPackagesForUid(Process.myUid());
+            if (!TrickyStoreService.getInstance().needHack(Process.myUid(), packages)) {
+                return metadata;
+            }
+
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            List<Certificate> chain = new ArrayList<>();
+            chain.add(cf.generateCertificate(new ByteArrayInputStream(metadata.certificate)));
+            for (Certificate c : cf.generateCertificates(
+                    new ByteArrayInputStream(metadata.certificateChain))) {
+                chain.add(c);
+            }
+
+            Certificate[] input = chain.toArray(new Certificate[0]);
+            Certificate[] hacked = CertificateHacker.hackCertificateChain(input, packages);
+            // Same array reference == no change (no attestation ext, no keybox, or
+            // already keybox-issued); nothing to persist.
+            if (hacked == null || hacked == input || hacked.length == 0) {
+                return metadata;
+            }
+
+            byte[] hackedLeaf = hacked[0].getEncoded();
+            byte[] hackedChain = hacked.length > 1
+                    ? encodeCertificateChain(Arrays.asList(hacked).subList(1, hacked.length))
+                    : null;
+            mKeyStore.updateSubcomponents(descriptor, hackedLeaf, hackedChain);
+            Log.i(TAG, "Persisted keybox attestation for " + mEntryAlias);
+
+            // Re-read so the returned KeyPair is built from the persisted (hacked)
+            // certificate, keeping generateKey/getCertificateChain/getKeyEntry consistent.
+            KeyEntryResponse refreshed = mKeyStore.getKeyEntry(descriptor);
+            if (refreshed != null && refreshed.metadata != null
+                    && refreshed.metadata.certificate != null) {
+                return refreshed.metadata;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to persist hacked attestation; keeping genuine chain", e);
+        }
+        return metadata;
     }
 
     private byte[] encodeCertificateChain(List<Certificate> chain)
