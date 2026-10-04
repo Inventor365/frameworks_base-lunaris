@@ -126,10 +126,31 @@ public class TrickyStoreService {
         String fetch(IActivityManager am) throws RemoteException;
     }
 
+    // Always-targeted packages for key attestation. GMS (DroidGuard runs under the
+    // com.google.android.gms uid, which is what getPackagesForUid returns) must be
+    // hacked for Play Integrity STRONG; the Play Store too. These are enforced here
+    // so the Settings app picker — which overwrites the whole target setting with
+    // only its currently-visible, selected rows and can silently drop GMS when system
+    // apps are hidden during a "select all" — can never leave them untargeted. A user
+    // can still opt out explicitly by marking the package SKIP ("-"), which is honored.
+    private static final String[] DEFAULT_ATTESTATION_TARGETS = {
+        "com.google.android.gms",
+        "com.android.vending",
+    };
+
+    private static void applyDefaultTargets(Map<String, Mode> modes) {
+        for (String pkg : DEFAULT_ATTESTATION_TARGETS) {
+            // putIfAbsent: never override an explicit user choice (e.g. SKIP).
+            modes.putIfAbsent(pkg, Mode.AUTO);
+        }
+    }
+
     public void refreshTargets() {
         String content = fetchFromAms(am -> am.getSpoofTrickyStoreTarget());
         if (content == null || content.isEmpty()) {
-            mPackageModes = Collections.emptyMap();
+            Map<String, Mode> modes = new HashMap<>();
+            applyDefaultTargets(modes);
+            mPackageModes = Collections.unmodifiableMap(modes);
             mLastTargetsContent = null;
             return;
         }
@@ -147,11 +168,12 @@ public class TrickyStoreService {
             } else {
                 parseTargetsText(trimmed, modes);
             }
-            Log.i(TAG, "Updated target packages: modes=" + modes);
         } catch (Exception e) {
             // As before, keep whatever parsed before the error.
             Log.e(TAG, "Failed to parse target packages", e);
         }
+        applyDefaultTargets(modes);
+        Log.i(TAG, "Updated target packages: modes=" + modes);
         mPackageModes = Collections.unmodifiableMap(modes);
         mLastTargetsContent = content;
     }
