@@ -1359,6 +1359,16 @@ public class OomAdjusterImpl extends OomAdjuster {
                 // short-fgs can't start FGS from the background.
                 newProcState = PROCESS_STATE_FOREGROUND_SERVICE;
 
+            } else if (app.getHasActiveAudioPlayback()) {
+                // The user can hear this process, but it has no foreground service (the
+                // START_FOREGROUND app op is denied, the FGS start was refused from the
+                // background, or the app never started one). Rank it like a media playback
+                // FGS so it is not frozen, cut off from the network in Doze or killed early.
+                // No BFSL capability: this must not let it start other work from background.
+                adjType = "playing-audio";
+                newAdj = PERCEPTIBLE_APP_ADJ;
+                newProcState = PROCESS_STATE_FOREGROUND_SERVICE;
+
             } else if (app.getHasOverlayUi()) {
                 adjType = "has-overlay-ui";
                 newAdj = PERCEPTIBLE_APP_ADJ;

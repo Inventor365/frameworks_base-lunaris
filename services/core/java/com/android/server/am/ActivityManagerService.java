@@ -1653,6 +1653,9 @@ public class ActivityManagerService extends IActivityManager.Stub
     @NonNull
     private final Freezer mFreezer;
 
+    /** Keeps processes that are playing audio from being cached and frozen. */
+    private AudioPlaybackProcessTracker mAudioPlaybackTracker;
+
     /*
      * The default duration for the binder heavy hitter auto sampler
      */
@@ -5442,6 +5445,11 @@ public class ActivityManagerService extends IActivityManager.Stub
 
         t.traceEnd();
         ProcessFreezerManager.getInstance().init(mFreezer);
+
+        if (mAudioPlaybackTracker == null) {
+            mAudioPlaybackTracker = new AudioPlaybackProcessTracker(this, mHandler.getLooper());
+            mAudioPlaybackTracker.start(mContext);
+        }
     }
 
     private void showConsoleNotificationIfActive() {
