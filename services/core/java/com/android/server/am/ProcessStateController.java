@@ -519,6 +519,23 @@ public class ProcessStateController {
         return true;
     }
 
+    /**
+     * Note whether a process is playing audible audio or not.
+     *
+     * @return true if the state changed, otherwise returns false.
+     */
+    @GuardedBy("mLock")
+    public boolean setHasActiveAudioPlayback(@NonNull ProcessRecordInternal proc,
+            boolean hasActiveAudioPlayback) {
+        if (proc.getHasActiveAudioPlayback() == hasActiveAudioPlayback) return false;
+        if (DEBUG_OOM_ADJ) {
+            Slog.d(TAG, "Setting hasActiveAudioPlayback=" + hasActiveAudioPlayback
+                    + " for pid=" + proc.getPid());
+        }
+        proc.setHasActiveAudioPlayback(hasActiveAudioPlayback);
+        return true;
+    }
+
 
     /**
      * Note whether a process is running a remote animation.
