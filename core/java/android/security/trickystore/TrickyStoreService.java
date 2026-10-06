@@ -489,7 +489,12 @@ public class TrickyStoreService {
                         (java.security.cert.X509Certificate)
                         factory.generateCertificate(
                                 new java.io.ByteArrayInputStream(der));
-                serials.add(cert.getSerialNumber().toString(16).toUpperCase(java.util.Locale.US));
+                // Google's revocation list keys 128-bit serials as lowercase hex (no
+                // leading zeros) and old 64-bit ones as decimal; the previous uppercase
+                // form never matched. Add both so a revoked keybox is actually caught.
+                java.math.BigInteger serial = cert.getSerialNumber();
+                serials.add(serial.toString(16));
+                serials.add(serial.toString());
             } catch (Exception ignored) {}
         }
         return serials;
