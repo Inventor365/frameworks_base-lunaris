@@ -44,7 +44,9 @@ import java.util.regex.Pattern;
 public class KeyBoxManager {
     private static final String TAG = "KeyBoxManager";
 
-    private final Map<String, KeyBox> mKeyboxes = new ConcurrentHashMap<>();
+    // volatile so a freshly parsed map can be published atomically; a bad/truncated
+    // import must never leave readers with a half-filled or empty map.
+    private volatile Map<String, KeyBox> mKeyboxes = new ConcurrentHashMap<>();
     
     private static final Pattern PEM_HEADER = Pattern.compile("-----BEGIN ([^-]+)-----");
     private static final Pattern XML_COMMENT = Pattern.compile("<!--.*?-->", Pattern.DOTALL);
@@ -76,10 +78,13 @@ public class KeyBoxManager {
     }
 
     public void parseKeybox(String xmlContent) {
-        mKeyboxes.clear();
+        // Keep the currently loaded keyboxes until a new, non-empty set parses
+        // successfully — a truncated download or an empty read must not wipe them.
+        // (Explicit removal goes through clear().)
         if (xmlContent == null || xmlContent.isEmpty()) {
             return;
         }
+        Map<String, KeyBox> parsed = new ConcurrentHashMap<>();
 
         try {
             xmlContent = sanitizeXml(xmlContent);
@@ -159,7 +164,7 @@ public class KeyBoxManager {
                         } else if ("Key".equals(tagName)) {
                             inKey = false;
                             if (currentAlgorithm != null && privateKeyPem != null && !certificatePems.isEmpty()) {
-                                processKeybox(currentAlgorithm, privateKeyPem, certificatePems);
+                                processKeybox(parsed, currentAlgorithm, privateKeyPem, certificatePems);
                             }
                         }
                         break;
@@ -168,13 +173,22 @@ public class KeyBoxManager {
                 eventType = parser.next();
             }
 
-            Log.i(TAG, "Parsed " + mKeyboxes.size() + " keyboxes");
+            // NumberOfKeyboxes is advisory; publish whatever complete keys parsed.
+            // Reject an empty result so a truncated/keyless document can't wipe the
+            // keyboxes already in use.
+            if (!parsed.isEmpty()) {
+                mKeyboxes = parsed;
+                Log.i(TAG, "Parsed " + parsed.size() + " keyboxes");
+            } else {
+                Log.w(TAG, "No complete keybox parsed — keeping the existing keyboxes");
+            }
         } catch (Exception e) {
-            Log.e(TAG, "Failed to parse keybox XML", e);
+            Log.e(TAG, "Failed to parse keybox XML — keeping the existing keyboxes", e);
         }
     }
 
-    private void processKeybox(String algorithm, String privateKeyPem, List<String> certificatePems) {
+    private void processKeybox(Map<String, KeyBox> target, String algorithm,
+            String privateKeyPem, List<String> certificatePems) {
         try {
             String normalizedAlgorithm;
             switch (algorithm.toLowerCase()) {
@@ -202,7 +216,7 @@ public class KeyBoxManager {
             if (!certificates.isEmpty()) {
                 PublicKey publicKey = ((X509Certificate) certificates.get(0)).getPublicKey();
                 KeyPair keyPair = new KeyPair(publicKey, privateKey);
-                mKeyboxes.put(normalizedAlgorithm, new KeyBox(keyPair, certificates));
+                target.put(normalizedAlgorithm, new KeyBox(keyPair, certificates));
                 Log.i(TAG, "Added keybox for algorithm: " + normalizedAlgorithm);
             }
         } catch (Exception e) {
