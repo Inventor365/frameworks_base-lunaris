@@ -279,6 +279,8 @@ constructor(
                         
                         !(onKeyguard && e is IslandEvent.AppSwitch) &&
                         
+                        !(onKeyguard && e is IslandEvent.Clipboard) &&
+
                         !(!onKeyguard && e is IslandEvent.KeyguardIndication)
                 }
 
