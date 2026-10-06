@@ -389,16 +389,24 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
 
     private static final String PACKAGE_SYSTEMUI = "com.android.systemui";
 
-    private static boolean isHiddenPackage(@NonNull String packageName) {
-        return ROOT_PACKAGES.contains(packageName) || isRomPackage(packageName);
+    private static boolean isHiddenPackage(@Nullable String packageName) {
+        return packageName != null
+                && (ROOT_PACKAGES.contains(packageName)
+                        || ROM_PACKAGES_EXACT.contains(packageName)
+                        || isRomPackage(packageName));
     }
+
+    private static final Set<String> ROM_PACKAGES_EXACT = Set.of(
+            "lineageos.platform"
+    );
 
     private static boolean isRomPackage(@NonNull String packageName) {
         return packageName.startsWith("org.lineageos.")
+                || packageName.startsWith("com.libremobileos.")
                 || packageName.startsWith("org.omnirom.")
                 || packageName.startsWith("org.protonaosp.")
-                || packageName.startsWith("com.lunaris.")
-                || packageName.startsWith("com.axion.");
+                || packageName.startsWith("org.lunaris.")
+                || packageName.startsWith("com.android.axion.");
     }
 
     private static boolean canAccessHiddenPackages(@NonNull Computer snapshot, int callingUid,
