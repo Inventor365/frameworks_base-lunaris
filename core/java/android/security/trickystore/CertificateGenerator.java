@@ -75,6 +75,7 @@ public final class CertificateGenerator {
         public String ecCurveName;
         public List<Integer> purpose = new ArrayList<>();
         public List<Integer> digest = new ArrayList<>();
+        public List<Integer> rsaOaepMgfDigest = new ArrayList<>();
         public byte[] attestationChallenge;
         public byte[] brand;
         public byte[] device;
@@ -237,6 +238,16 @@ public final class CertificateGenerator {
                 digests[i] = new ASN1Integer(params.digest.get(i));
             }
             ordered.put(5, new DERTaggedObject(true, 5, new DERSet(digests)));
+
+            // Tag 203 = RSA_OAEP_MGF_DIGEST (KeyMint 3+). Real TEEs emit it for RSA keys
+            // that declare OAEP MGF1 digests; omitting it is a KeyMint-3 detection vector.
+            if (params.algorithm == 1 && !params.rsaOaepMgfDigest.isEmpty()) {
+                ASN1Integer[] mgfDigests = new ASN1Integer[params.rsaOaepMgfDigest.size()];
+                for (int i = 0; i < params.rsaOaepMgfDigest.size(); i++) {
+                    mgfDigests[i] = new ASN1Integer(params.rsaOaepMgfDigest.get(i));
+                }
+                ordered.put(203, new DERTaggedObject(true, 203, new DERSet(mgfDigests)));
+            }
 
             ordered.put(10, new DERTaggedObject(true, 10, new ASN1Integer(params.ecCurve)));
             ordered.put(503, new DERTaggedObject(true, 503, DERNull.INSTANCE));
