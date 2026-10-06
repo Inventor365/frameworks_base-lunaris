@@ -1,5 +1,6 @@
 package android.security.trickystore;
 
+import android.security.pif.PlayIntegritySpoofService;
 import android.util.Log;
 
 import com.android.internal.org.bouncycastle.asn1.ASN1Boolean;
@@ -45,7 +46,9 @@ import java.security.interfaces.RSAPrivateCrtKey;
 import java.security.interfaces.RSAPrivateKey;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -88,6 +91,12 @@ public final class CertificateHacker {
             ASN1Encodable[] encodables = sequence.toArray();
             ASN1Sequence teeEnforced = (ASN1Sequence) encodables[7];
 
+            // Attestation-ID tags (brand/device/product/manufacturer/model) to replace
+            // with the active PIF profile, so the KeyMint hardware attestation cert and
+            // the GMS-visible Build fields tell the same story. Empty when build spoofing
+            // is off, leaving the real hardware identity untouched.
+            Map<Integer, byte[]> attestationIdOverrides = getAttestationIdOverrides();
+
             ASN1EncodableVector vector = new ASN1EncodableVector();
             ASN1Encodable originalRootOfTrust = null;
 
@@ -98,6 +107,9 @@ public final class CertificateHacker {
                     originalRootOfTrust = taggedObject.getBaseObject().toASN1Primitive();
                 } else if (tag == 705 || tag == 706 || tag == 718 || tag == 719) {
                     // Skip to prevent duplicate tags when overridden values are appended
+                    continue;
+                } else if (attestationIdOverrides.containsKey(tag)) {
+                    // Dropped here; the spoofed replacement is re-added in hackAttestExtension
                     continue;
                 } else {
                     vector.add(taggedObject);
@@ -139,7 +151,8 @@ public final class CertificateHacker {
                     : "SHA256withECDSA";
             ContentSigner signer = createBCSigner(sigAlg, privKey);
 
-            Extension hackedExtension = hackAttestExtension(originalRootOfTrust, vector, encodables);
+            Extension hackedExtension = hackAttestExtension(
+                originalRootOfTrust, vector, encodables, attestationIdOverrides);
             builder.addExtension(hackedExtension);
 
             for (Object oid : leafHolder.getExtensions().getExtensionOIDs()) {
@@ -283,10 +296,51 @@ public final class CertificateHacker {
         return true;
     }
 
+    // KeyMint attestation-ID tag numbers for the hardware identity fields.
+    private static final int TAG_ATTESTATION_ID_BRAND = 710;
+    private static final int TAG_ATTESTATION_ID_DEVICE = 711;
+    private static final int TAG_ATTESTATION_ID_PRODUCT = 712;
+    private static final int TAG_ATTESTATION_ID_MANUFACTURER = 716;
+    private static final int TAG_ATTESTATION_ID_MODEL = 717;
+
+    /**
+     * Builds the set of attestation-ID tags to override from the active
+     * PlayIntegritySpoofService profile, so a Play Integrity / Wallet check that
+     * cross-references GMS-visible Build fields against the KeyMint attestation cert
+     * can't catch a mismatch. Returns an empty map (no-op) when build spoofing is off,
+     * so unspoofed callers keep their real hardware identity in the cert.
+     */
+    private static Map<Integer, byte[]> getAttestationIdOverrides() {
+        Map<Integer, byte[]> overrides = new HashMap<>();
+        try {
+            PlayIntegritySpoofService pif = PlayIntegritySpoofService.getInstance();
+            if (!pif.isSpoofBuildEnabled()) {
+                return overrides;
+            }
+            Map<String, String> buildFields = pif.getBuildFields();
+            putIfPresent(overrides, TAG_ATTESTATION_ID_BRAND, buildFields.get("BRAND"));
+            putIfPresent(overrides, TAG_ATTESTATION_ID_DEVICE, buildFields.get("DEVICE"));
+            putIfPresent(overrides, TAG_ATTESTATION_ID_PRODUCT, buildFields.get("PRODUCT"));
+            putIfPresent(overrides, TAG_ATTESTATION_ID_MANUFACTURER,
+                buildFields.get("MANUFACTURER"));
+            putIfPresent(overrides, TAG_ATTESTATION_ID_MODEL, buildFields.get("MODEL"));
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to read PIF build fields for attestation IDs", e);
+        }
+        return overrides;
+    }
+
+    private static void putIfPresent(Map<Integer, byte[]> map, int tag, String value) {
+        if (value != null && !value.isEmpty()) {
+            map.put(tag, value.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
     private static Extension hackAttestExtension(
             ASN1Encodable originalRootOfTrust,
             ASN1EncodableVector vector,
-            ASN1Encodable[] originalEncodables) throws Exception {
+            ASN1Encodable[] originalEncodables,
+            Map<Integer, byte[]> attestationIdOverrides) throws Exception {
 
         byte[] bootKey = null;
         byte[] bootHash = null;
@@ -339,8 +393,16 @@ public final class CertificateHacker {
             new ASN1Integer(AttestationUtils.getPatchLevel(false))));
         ordered.put(718, new DERTaggedObject(true, 718, 
             new ASN1Integer(AttestationUtils.getVendorPatchLevel(true))));
-        ordered.put(719, new DERTaggedObject(true, 719, 
+        ordered.put(719, new DERTaggedObject(true, 719,
             new ASN1Integer(AttestationUtils.getBootPatchLevel(true))));
+
+        // Re-add the hardware identity tags dropped in hackCertificateChain(), using the
+        // same certified profile PlayIntegritySpoofService serves to GMS/DroidGuard, so
+        // the attestation cert and the spoofed Build fields can't disagree.
+        for (Map.Entry<Integer, byte[]> entry : attestationIdOverrides.entrySet()) {
+            ordered.put(entry.getKey(), new DERTaggedObject(true, entry.getKey(),
+                new DEROctetString(entry.getValue())));
+        }
 
         ASN1EncodableVector sortedVector = new ASN1EncodableVector();
         for (ASN1Encodable enc : ordered.values()) {
