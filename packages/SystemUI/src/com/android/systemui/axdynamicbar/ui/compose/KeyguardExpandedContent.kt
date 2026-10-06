@@ -361,7 +361,7 @@ private fun KeyguardMediaPanel(
                 ) { art ->
                     if (art != null) {
                         Image(
-                            bitmap = art.toScaledBitmap(SizeAlbumLg),
+                            bitmap = art.toSquareScaledBitmap(SizeAlbumLg),
                             contentDescription = null,
                             modifier = Modifier
                                 .fillMaxHeight()
