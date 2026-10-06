@@ -87,6 +87,11 @@ public final class PlayIntegritySpoofService {
         return sInstance;
     }
 
+    /** Whether Build-field spoofing is enabled and a profile is loaded. */
+    public boolean isSpoofBuildEnabled() {
+        return mSpoofBuild && !mBuildFields.isEmpty();
+    }
+
     public void loadConfig() {
         mBuildFields.clear();
         mSystemProps.clear();
