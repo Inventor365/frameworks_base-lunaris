@@ -384,7 +384,29 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
             "es.chiteroman.bootloaderspoofer",
             "io.github.a13e300.tricky_store",
             "io.github.a13e300.tricky_store.debug",
-            "com.xayah.databackup.foss"
+            "com.xayah.databackup.foss",
+            // Xposed/hook module tooling and mod managers. Safe to hide from
+            // unprivileged callers: no legitimate app enumerates these by name.
+            // NOTE: Shizuku/Dhizuku are deliberately NOT listed here — client
+            // apps bind to them by package, so a global PM-level hide would
+            // break that integration. They stay hidden only at the bionic
+            // filesystem/dirent layer (kBlockedPackageNames), which does not
+            // block service binding.
+            "me.weishu.exp",
+            "top.hookvip.pro",
+            "me.simpleHook",
+            "com.sevtinge.hyperceiler",
+            "com.omarea.vtools",
+            "com.coderstory.toolkit",
+            "com.dergoogler.mmrl",
+            "com.dergoogler.mmrl.wx",
+            "com.valhalla.thor",
+            "io.github.huskydg.magisk",
+            // Root/app hiders themselves (incl. HMA forks) and private-space
+            // managers — their presence reveals a modified device.
+            "org.frknkrc44.hma_oss",
+            "com.google.android.hmal",
+            "cn.geektang.privacyspace"
     );
 
     private static final String PACKAGE_SYSTEMUI = "com.android.systemui";
