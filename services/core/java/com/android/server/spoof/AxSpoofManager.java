@@ -156,7 +156,12 @@ public class AxSpoofManager implements IAxSpoofManager {
         }
         mResolver = mContext.getContentResolver();
         mDuckRkp = new DuckRkpManager(mContext, mHandler, () -> mHandler.post(() -> {
+            for (String key : WATCHED_KEYS) {
+                refreshKey(key);
+            }
             TrickyStoreService.getInstance().initialize();
+            if (!mActivated) return;
+            seedDefaultTargetsIfUnset();
             killGmsFamily(false);
         }));
 
