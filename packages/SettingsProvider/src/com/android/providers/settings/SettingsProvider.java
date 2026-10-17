@@ -628,6 +628,14 @@ public class SettingsProvider extends ContentProvider {
     }
 
     private String getSpoofedValue(String name) {
+        // Only app processes get spoofed values. system_server ("android"), the shell and
+        // other system uids act on the real settings: AdbService reads adb_enabled and
+        // adb_wifi_enabled back through this provider, and spoofing them to "0" kept adbd
+        // stopped whatever Developer options showed, breaking USB and wireless debugging.
+        if (UserHandle.getAppId(Binder.getCallingUid()) < Process.FIRST_APPLICATION_UID) {
+            return null;
+        }
+
         String callingPackage = getCallingPackage();
         if (callingPackage == null) return null;
 
