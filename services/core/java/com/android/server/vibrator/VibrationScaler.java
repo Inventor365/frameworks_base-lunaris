@@ -20,16 +20,21 @@ import android.annotation.NonNull;
 import android.os.ExternalVibrationScale;
 import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
+import android.os.VibrationEffect.Composition;
 import android.os.Vibrator;
 import android.os.vibrator.Flags;
 import android.os.vibrator.PrebakedSegment;
+import android.os.vibrator.PrimitiveSegment;
 import android.os.vibrator.VibrationConfig;
+import android.os.vibrator.VibrationEffectSegment;
 import android.util.IndentingPrintWriter;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.util.proto.ProtoOutputStream;
 
 import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /** Controls vibration scaling. */
@@ -105,6 +110,12 @@ final class VibrationScaler {
      * @return The scale factor.
      */
     public float getScaleFactor(int usageHint, boolean isExternalVibration) {
+        // Audio-coupled haptics, like those of games and ringtones, follow AndromedaHaptics too.
+        float andromedaDrive = isExternalVibration
+                ? mVibrationSettings.getAndromedaHapticsDrive(usageHint) : -1f;
+        if (andromedaDrive > 0) {
+            return andromedaDrive;
+        }
         if (!Flags.vibrationScaleDeviceConfigEnabled()) {
             return scaleLevelToScaleFactor(getScaleLevel(usageHint));
         }
@@ -142,6 +153,11 @@ final class VibrationScaler {
      */
     @NonNull
     public VibrationEffect scale(@NonNull VibrationEffect effect, int usageHint) {
+        float andromedaDrive = mVibrationSettings.getAndromedaHapticsDrive(usageHint);
+        if (andromedaDrive > 0) {
+            return scaleWithAndromedaDrive(effect, usageHint, andromedaDrive);
+        }
+
         int newEffectStrength = getEffectStrength(usageHint);
         float scaleFactor = getScaleFactor(usageHint, /* isExternalVibration= */ false);
         float adaptiveScale = getAdaptiveHapticsScale(usageHint);
@@ -161,6 +177,77 @@ final class VibrationScaler {
                 .scale(scaleFactor)
                 // Make sure this is the last one so it is applied on top of the settings scaling.
                 .applyAdaptiveScale(adaptiveScale);
+    }
+
+    /**
+     * Applies the AndromedaHaptics drive level of the usage (hook v2). It replaces the stock
+     * intensity scale, which only decides whether the usage vibrates at all, so the level set in
+     * AndromedaHaptics is the one every vibration of the usage plays at. Prebaked effects only know
+     * three strengths, so they are played as primitives when the HAL can compose them, which makes
+     * the drive level continuous across every kind of effect.
+     */
+    @NonNull
+    private VibrationEffect scaleWithAndromedaDrive(@NonNull VibrationEffect effect, int usageHint,
+            float drive) {
+        VibrationEffect resolved =
+                effect.resolve(mVibrationConfig.getDefaultVibrationAmplitude());
+        if (mVibrationSettings.isAndromedaHapticsPrebakedAsPrimitives()) {
+            resolved = prebakedToPrimitives(resolved);
+        }
+        return resolved
+                .applyEffectStrength(getEffectStrength(usageHint))
+                .scaleLinearly(drive)
+                .applyAdaptiveScale(getAdaptiveHapticsScale(usageHint));
+    }
+
+    @NonNull
+    private static VibrationEffect prebakedToPrimitives(@NonNull VibrationEffect effect) {
+        if (!(effect instanceof VibrationEffect.Composed composed)
+                || composed.getRepeatIndex() >= 0) {
+            return effect;
+        }
+        List<VibrationEffectSegment> segments = new ArrayList<>();
+        for (VibrationEffectSegment segment : composed.getSegments()) {
+            if (segment instanceof PrebakedSegment prebaked) {
+                addPrebakedAsPrimitives(prebaked, segments);
+            } else {
+                segments.add(segment);
+            }
+        }
+        return new VibrationEffect.Composed(segments, composed.getRepeatIndex());
+    }
+
+    /** The primitive choices match the waveforms the AndromedaHaptics HAL maps them to. */
+    private static void addPrebakedAsPrimitives(PrebakedSegment prebaked,
+            List<VibrationEffectSegment> segments) {
+        switch (prebaked.getEffectId()) {
+            case VibrationEffect.EFFECT_CLICK ->
+                    segments.add(new PrimitiveSegment(Composition.PRIMITIVE_CLICK, 1f, 0));
+            case VibrationEffect.EFFECT_DOUBLE_CLICK -> {
+                segments.add(new PrimitiveSegment(Composition.PRIMITIVE_CLICK, 1f, 0));
+                segments.add(new PrimitiveSegment(Composition.PRIMITIVE_CLICK, 1f, 40));
+            }
+            case VibrationEffect.EFFECT_TICK ->
+                    segments.add(new PrimitiveSegment(Composition.PRIMITIVE_TICK, 1f, 0));
+            case VibrationEffect.EFFECT_TEXTURE_TICK ->
+                    segments.add(new PrimitiveSegment(Composition.PRIMITIVE_TICK, 0.25f, 0));
+            case VibrationEffect.EFFECT_THUD ->
+                    segments.add(new PrimitiveSegment(Composition.PRIMITIVE_THUD, 1f, 0));
+            case VibrationEffect.EFFECT_POP ->
+                    segments.add(new PrimitiveSegment(Composition.PRIMITIVE_SPIN, 1f, 0));
+            case VibrationEffect.EFFECT_HEAVY_CLICK ->
+                    segments.add(new PrimitiveSegment(Composition.PRIMITIVE_QUICK_FALL, 1f, 0));
+            default -> segments.add(prebaked);
+        }
+    }
+
+    /** Effect strength for prebaked effects that cannot be played as primitives. */
+    private static int andromedaDriveToEffectStrength(float drive) {
+        if (drive <= 0.4f) {
+            return VibrationEffect.EFFECT_STRENGTH_LIGHT;
+        }
+        return drive <= 0.75f ? VibrationEffect.EFFECT_STRENGTH_MEDIUM
+                : VibrationEffect.EFFECT_STRENGTH_STRONG;
     }
 
     /**
@@ -279,6 +366,11 @@ final class VibrationScaler {
     }
 
     private int getEffectStrength(int usageHint) {
+        float andromedaDrive = mVibrationSettings.getAndromedaHapticsDrive(usageHint);
+        if (andromedaDrive > 0) {
+            return andromedaDriveToEffectStrength(andromedaDrive);
+        }
+
         int currentIntensity = mVibrationSettings.getCurrentIntensity(usageHint);
         if (currentIntensity == Vibrator.VIBRATION_INTENSITY_OFF) {
             // Bypassing user settings, or it has changed between checking and scaling. Use default.
