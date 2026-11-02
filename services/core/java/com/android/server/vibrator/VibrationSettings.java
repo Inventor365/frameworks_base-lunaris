@@ -81,6 +81,27 @@ import java.util.Set;
 
 /** Controls all the system settings related to vibration. */
 final class VibrationSettings {
+    private static final String ANDROMEDA_HAPTICS_TOUCH = "andromeda_haptics_touch_scale";
+    private static final String ANDROMEDA_HAPTICS_KEYBOARD = "andromeda_haptics_keyboard_scale";
+    private static final String ANDROMEDA_HAPTICS_GESTURE = "andromeda_haptics_gesture_scale";
+    private static final String ANDROMEDA_HAPTICS_NOTIFICATION =
+            "andromeda_haptics_notification_scale";
+    private static final String ANDROMEDA_HAPTICS_RING = "andromeda_haptics_ring_scale";
+    private static final String ANDROMEDA_HAPTICS_ALARM = "andromeda_haptics_alarm_scale";
+    private static final String ANDROMEDA_HAPTICS_MEDIA = "andromeda_haptics_media_scale";
+    private static final String ANDROMEDA_HAPTICS_PREBAKED_AS_PRIMITIVES =
+            "andromeda_haptics_prebaked_as_primitives";
+    private static final String[] ANDROMEDA_HAPTICS_SETTINGS = {
+            ANDROMEDA_HAPTICS_TOUCH,
+            ANDROMEDA_HAPTICS_KEYBOARD,
+            ANDROMEDA_HAPTICS_GESTURE,
+            ANDROMEDA_HAPTICS_NOTIFICATION,
+            ANDROMEDA_HAPTICS_RING,
+            ANDROMEDA_HAPTICS_ALARM,
+            ANDROMEDA_HAPTICS_MEDIA,
+            ANDROMEDA_HAPTICS_PREBAKED_AS_PRIMITIVES,
+    };
+
     private static final String TAG = "VibrationSettings";
 
     /**
@@ -194,6 +215,10 @@ final class VibrationSettings {
     @GuardedBy("mLock")
     private SparseIntArray mCurrentVibrationIntensities = new SparseIntArray();
     @GuardedBy("mLock")
+    private final SparseArray<Float> mAndromedaHapticsDrives = new SparseArray<>();
+    @GuardedBy("mLock")
+    private boolean mAndromedaHapticsPrebakedAsPrimitives;
+    @GuardedBy("mLock")
     private boolean mBatterySaverMode;
     @GuardedBy("mLock")
     private boolean mVibrateOn;
@@ -289,6 +314,9 @@ final class VibrationSettings {
                 Settings.System.getUriFor(Settings.System.RING_VIBRATION_INTENSITY));
         registerSettingsObserver(
                 Settings.System.getUriFor(Settings.System.KEYBOARD_VIBRATION_ENABLED));
+        for (String setting : ANDROMEDA_HAPTICS_SETTINGS) {
+            registerSettingsObserver(Settings.System.getUriFor(setting));
+        }
 
         if (mVibrationConfig.ignoreVibrationsOnWirelessCharger()) {
             Intent batteryStatus = mContext.registerReceiver(
@@ -364,6 +392,23 @@ final class VibrationSettings {
         int defaultIntensity = getDefaultIntensity(usageHint);
         synchronized (mLock) {
             return mCurrentVibrationIntensities.get(usageHint, defaultIntensity);
+        }
+    }
+
+    /**
+     * Returns the AndromedaHaptics drive level for the usage in the range (0, 1], or a negative
+     * value when the category is not configured and the stock behaviour applies.
+     */
+    public float getAndromedaHapticsDrive(@VibrationAttributes.Usage int usageHint) {
+        synchronized (mLock) {
+            return mAndromedaHapticsDrives.get(usageHint, -1f);
+        }
+    }
+
+    /** Whether prebaked effects should be played as primitives so they scale continuously. */
+    public boolean isAndromedaHapticsPrebakedAsPrimitives() {
+        synchronized (mLock) {
+            return mAndromedaHapticsPrebakedAsPrimitives;
         }
     }
 
@@ -610,7 +655,73 @@ final class VibrationSettings {
 
             // A11y is not disabled by any haptic feedback setting.
             mCurrentVibrationIntensities.put(USAGE_ACCESSIBILITY, positiveHapticFeedbackIntensity);
+
+            updateAndromedaHapticsDrives(userHandle);
         }
+    }
+
+    @GuardedBy("mLock")
+    private void updateAndromedaHapticsDrives(int userHandle) {
+        mAndromedaHapticsPrebakedAsPrimitives =
+                loadSystemSetting(ANDROMEDA_HAPTICS_PREBAKED_AS_PRIMITIVES, 0, userHandle) > 0;
+        mAndromedaHapticsDrives.clear();
+        String touchLevel = Settings.System.HAPTIC_FEEDBACK_INTENSITY;
+        putAndromedaHapticsDrive(USAGE_TOUCH, ANDROMEDA_HAPTICS_TOUCH, touchLevel, userHandle);
+        putAndromedaHapticsDrive(USAGE_HARDWARE_FEEDBACK, ANDROMEDA_HAPTICS_TOUCH, touchLevel,
+                userHandle);
+        putAndromedaHapticsDrive(USAGE_PHYSICAL_EMULATION, ANDROMEDA_HAPTICS_TOUCH, touchLevel,
+                userHandle);
+        putAndromedaHapticsDrive(USAGE_IME_FEEDBACK, ANDROMEDA_HAPTICS_KEYBOARD, null, userHandle);
+        putAndromedaHapticsDrive(USAGE_GESTURE_INPUT, ANDROMEDA_HAPTICS_GESTURE,
+                Settings.System.GESTURE_INPUT_VIBRATION_INTENSITY, userHandle);
+        String notificationLevel = Settings.System.NOTIFICATION_VIBRATION_INTENSITY;
+        putAndromedaHapticsDrive(USAGE_NOTIFICATION, ANDROMEDA_HAPTICS_NOTIFICATION,
+                notificationLevel, userHandle);
+        putAndromedaHapticsDrive(USAGE_COMMUNICATION_REQUEST, ANDROMEDA_HAPTICS_NOTIFICATION,
+                notificationLevel, userHandle);
+        putAndromedaHapticsDrive(USAGE_RINGTONE, ANDROMEDA_HAPTICS_RING,
+                Settings.System.RING_VIBRATION_INTENSITY, userHandle);
+        putAndromedaHapticsDrive(USAGE_ALARM, ANDROMEDA_HAPTICS_ALARM,
+                Settings.System.ALARM_VIBRATION_INTENSITY, userHandle);
+        // Vibrations without attributes, i.e. most games and other apps, count as media.
+        String mediaLevel = Settings.System.MEDIA_VIBRATION_INTENSITY;
+        putAndromedaHapticsDrive(USAGE_MEDIA, ANDROMEDA_HAPTICS_MEDIA, mediaLevel, userHandle);
+        putAndromedaHapticsDrive(USAGE_UNKNOWN, ANDROMEDA_HAPTICS_MEDIA, mediaLevel, userHandle);
+    }
+
+    @GuardedBy("mLock")
+    private void putAndromedaHapticsDrive(int usage, String setting, String levelSetting,
+            int userHandle) {
+        // Zero is expressed by the intensity setting being off, so it never reaches the scaler.
+        int percent = Math.min(loadSystemSetting(setting, 0, userHandle), 100);
+        if (percent <= 0) {
+            return;
+        }
+        // A level changed on the stock vibration page takes effect right away, until
+        // AndromedaHaptics turns it into a percentage of its own.
+        int level = levelSetting == null ? -1 : loadSystemSetting(levelSetting, -1, userHandle);
+        if (level > Vibrator.VIBRATION_INTENSITY_OFF && level != andromedaPercentToLevel(percent)) {
+            percent = andromedaLevelToPercent(level);
+        }
+        mAndromedaHapticsDrives.put(usage, percent / 100f);
+    }
+
+    /** The stock level shown for a percentage. Must match HapticsConfigStore in the app. */
+    static int andromedaPercentToLevel(int percent) {
+        if (percent <= 40) {
+            return Vibrator.VIBRATION_INTENSITY_LOW;
+        }
+        return percent <= 75 ? Vibrator.VIBRATION_INTENSITY_MEDIUM
+                : Vibrator.VIBRATION_INTENSITY_HIGH;
+    }
+
+    /** The percentage a stock level stands for. Must match HapticsConfigStore in the app. */
+    static int andromedaLevelToPercent(int level) {
+        return switch (level) {
+            case Vibrator.VIBRATION_INTENSITY_LOW -> 35;
+            case Vibrator.VIBRATION_INTENSITY_MEDIUM -> 65;
+            default -> 100;
+        };
     }
 
     private void updateRingerMode() {
