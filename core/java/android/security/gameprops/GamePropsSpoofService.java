@@ -37,6 +37,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import sun.misc.Unsafe;
+
 /**
  * Unified device-props spoofing service.
  *
@@ -57,6 +59,29 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class GamePropsSpoofService {
 
     private static final String TAG = "GameProps";
+
+    private static final Field OFFSET_FIELD;
+    private static final Unsafe UNSAFE;
+
+    static {
+        Unsafe unsafe = null;
+        Field offsetField = null;
+
+        try {
+            Field field = Unsafe.class.getDeclaredField("theUnsafe");
+            field.setAccessible(true);
+            unsafe = (Unsafe) field.get(null);
+            field.setAccessible(false);
+
+            offsetField = Field.class.getDeclaredField("offset");
+            offsetField.setAccessible(true);
+        } catch (Exception e) {
+            Log.e(TAG, "Unable to initialize Unsafe", e);
+        }
+
+        UNSAFE = unsafe;
+        OFFSET_FIELD = offsetField;
+    }
 
     // -------------------------------------------------------------------------
     // Settings keys (mirrors Settings.Secure constants used by the UI)
@@ -126,6 +151,7 @@ public final class GamePropsSpoofService {
         BUILTIN_PROFILES.put("OP8P5G",  profile("OnePlus",     "IN2023",      "OnePlus", "OnePlus 8 Pro 5G", "OnePlus/IN2023/OnePlus8Pro:13/RKQ1.211119.001/20230501:user/release-keys",                                 "IN2023"));
         BUILTIN_PROFILES.put("PXL",     profile("google",      "marlin",      "Google",  "Pixel XL",    "google/marlin/marlin:10/QP1A.191005.007.A3/5972272:user/release-keys",                                          "marlin"));
         BUILTIN_PROFILES.put("PXL10PXL",profile("google",      "Pixel 10 Pro XL", "Google", "mustang", "google/mustang/mustang:16/CP1A.260305.018/14887507:user/release-keys",                                           "mustang"));
+        BUILTIN_PROFILES.put("PXL11PXL",profile("google",      "Pixel 11 Pro XL", "Google", "kodiak",  "google/kodiak/kodiak:17/CD1A.260714.001.A9/15938155:user/release-keys",                                         "kodiak"));
         BUILTIN_PROFILES.put("RM9P",    profile("nubia",       "NX769J",      "ZTE",     "REDMAGIC 9 Pro", "nubia/NX769J/NX769J:14/UKQ1.230917.001/20240813.173312:user/release-keys",                                  "NX769J"));
         BUILTIN_PROFILES.put("RM10P",   profile("nubia",       "NX789J",      "ZTE",     "RedMagic 10 Pro", "nubia/NX789J-UN/NX789J:15/AQ3A.240812.002/20241212.194919:user/release-keys",                              "NX789J"));
         BUILTIN_PROFILES.put("RM15P5G", profile("realme",      "RMX5101",     "realme",  "Realme 15 Pro 5G", "realme/RMX5101IN/RE60B4L1:15/AP3A.240617.008/V.R4T2.26cec0e-80bb4e-80b757:user/release-keys",            "RMX5101"));
@@ -403,7 +429,21 @@ public final class GamePropsSpoofService {
                 return;
             }
 
-            field.set(null, newValue);
+            if (UNSAFE != null && OFFSET_FIELD != null) {
+                long offset = OFFSET_FIELD.getInt(field);
+                Object declaringClass = field.getDeclaringClass();
+                if (type == String.class) {
+                    UNSAFE.putObject(declaringClass, offset, newValue);
+                } else if (type == int.class) {
+                    UNSAFE.putInt(declaringClass, offset, (Integer) newValue);
+                } else if (type == long.class) {
+                    UNSAFE.putLong(declaringClass, offset, (Long) newValue);
+                } else if (type == boolean.class) {
+                    UNSAFE.putBoolean(declaringClass, offset, (Boolean) newValue);
+                }
+            } else {
+                field.set(null, newValue);
+            }
             if (mDebug) Log.d(TAG, "[" + packageName + "][" + fieldName + "]: "
                     + oldValue + " → " + value);
 

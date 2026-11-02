@@ -253,7 +253,13 @@ public final class PixelDeviceRepository {
             case "grizzly":
             case "kodiak":
             case "yogi":
+            case "formosan":
                 return "37";
+            case "galago":
+            case "sasquatch":
+            case "silverback":
+            case "capuchin":
+                return "38";
             default:
                 return null;
         }
@@ -329,7 +335,6 @@ public final class PixelDeviceRepository {
                     "com.nhs.online.nhsonline",
                     "com.nothing.smartcenter",
                     "com.realme.link",
-                    "in.startv.hotstar",
                     "jp.id_credit_sp2.android"
             )));
 

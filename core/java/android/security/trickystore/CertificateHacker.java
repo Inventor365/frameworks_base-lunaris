@@ -47,7 +47,9 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.RSAPrivateCrtKey;
+import java.security.interfaces.RSAPrivateKey;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -101,6 +103,7 @@ public final class CertificateHacker {
             ASN1Sequence teeEnforced = (ASN1Sequence) encodables[7];
 
             Map<Integer, byte[]> attestationIdOverrides = getAttestationIdOverrides();
+            Map<Integer, byte[]> presentOverrides = new HashMap<>();
 
             ASN1EncodableVector vector = new ASN1EncodableVector();
             ASN1Encodable originalRootOfTrust = null;
@@ -116,8 +119,9 @@ public final class CertificateHacker {
                     // emit each tag twice.
                 } else if (attestationIdOverrides.containsKey(tagNo)) {
                     // Dropped here; the spoofed replacement is added back in
-                    // hackAttestExtension() so the certified identity and the
-                    // GMS-visible Build fields can't disagree.
+                    // hackAttestExtension() only when the original cert actually
+                    // contained the tag, so unrequested attestation IDs are never injected.
+                    presentOverrides.put(tagNo, attestationIdOverrides.get(tagNo));
                 } else {
                     vector.add(taggedObject);
                 }
@@ -154,7 +158,7 @@ public final class CertificateHacker {
             ContentSigner signer = createBCSigner(signatureAlgorithm, keybox.keyPair.getPrivate());
 
             Extension hackedExtension = hackAttestExtension(
-                originalRootOfTrust, vector, encodables, attestationIdOverrides, packages);
+                originalRootOfTrust, vector, encodables, presentOverrides, packages);
 
             // Keep the leaf's original extension order (KeyUsage, then attestation)
             // instead of moving the attestation extension to the front.
@@ -233,6 +237,10 @@ public final class CertificateHacker {
             return new ECContentSigner(sigAlgId, keyParam);
         } else if (privateKey instanceof RSAPrivateCrtKey) {
             RSAPrivateCrtKey rsaKey = (RSAPrivateCrtKey) privateKey;
+            RSAKeyParameters keyParam = new RSAKeyParameters(true, rsaKey.getModulus(), rsaKey.getPrivateExponent());
+            return new RSAContentSigner(sigAlgId, keyParam);
+        } else if (privateKey instanceof RSAPrivateKey) {
+            RSAPrivateKey rsaKey = (RSAPrivateKey) privateKey;
             RSAKeyParameters keyParam = new RSAKeyParameters(true, rsaKey.getModulus(), rsaKey.getPrivateExponent());
             return new RSAContentSigner(sigAlgId, keyParam);
         }
@@ -426,12 +434,20 @@ public final class CertificateHacker {
         return new Extension(CertificateGenerator.ATTESTATION_OID, false, hackedOctets);
     }
 
+    private static boolean isAllZeros(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return true;
+        for (byte b : bytes) {
+            if (b != 0) return false;
+        }
+        return true;
+    }
+
     private static byte[] rootOfTrustOctet(ASN1Encodable rootOfTrust, int index) {
         try {
             ASN1Sequence sequence = ASN1Sequence.getInstance(rootOfTrust);
             if (sequence == null || sequence.size() <= index) return null;
             byte[] value = ASN1OctetString.getInstance(sequence.getObjectAt(index)).getOctets();
-            return value.length == 0 ? null : value;
+            return isAllZeros(value) ? null : value;
         } catch (IllegalArgumentException e) {
             return null;
         }

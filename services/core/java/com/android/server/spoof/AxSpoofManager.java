@@ -113,6 +113,10 @@ public class AxSpoofManager implements IAxSpoofManager {
     private static final String PIF_BUILD_ID_PROP = "persist.sys.pif.build.id";
     private static final String PIF_SECURITY_PATCH_PROP = "persist.sys.pif.security_patch";
     private static final String PIF_API_LEVEL_PROP = "persist.sys.pif.api_level";
+    private static final String PIF_BUILD_DESCRIPTION_PROP = "persist.sys.pif.build.description";
+    private static final String PIF_BUILD_FLAVOR_PROP = "persist.sys.pif.build.flavor";
+    private static final String PIF_BUILD_TYPE_PROP = "persist.sys.pif.build.type";
+    private static final String PIF_BUILD_TAGS_PROP = "persist.sys.pif.build.tags";
     // Config entries the fixed props above don't cover. Slot i holds "name=value", or
     // "*suffix=value" for a leading-* wildcard; the count says how many slots are live.
     // bionic's custom_rom_hide.cpp reads these with the same names and limits.
@@ -191,6 +195,10 @@ public class AxSpoofManager implements IAxSpoofManager {
 
         mActivated = Settings.Secure.getIntForUser(
                 mResolver, ACTIVATED_KEY, 0, UserHandle.USER_SYSTEM) != 0;
+        if (!mActivated && isDeviceProvisioned()) {
+            mActivated = true;
+            Settings.Secure.putIntForUser(mResolver, ACTIVATED_KEY, 1, UserHandle.USER_SYSTEM);
+        }
         if (mActivated) {
             seedDefaultTargetsIfUnset();
             stagePifPropOverrides(getCached(Settings.Secure.SPOOF_PIF_CONFIG));
@@ -314,6 +322,10 @@ public class AxSpoofManager implements IAxSpoofManager {
         setStagedProp(PIF_BUILD_ID_PROP, null);
         setStagedProp(PIF_SECURITY_PATCH_PROP, null);
         setStagedProp(PIF_API_LEVEL_PROP, null);
+        setStagedProp(PIF_BUILD_DESCRIPTION_PROP, null);
+        setStagedProp(PIF_BUILD_FLAVOR_PROP, null);
+        setStagedProp(PIF_BUILD_TYPE_PROP, null);
+        setStagedProp(PIF_BUILD_TAGS_PROP, null);
         stageCustomProps(null);
     }
 
@@ -561,18 +573,20 @@ public class AxSpoofManager implements IAxSpoofManager {
         }
         // A config in PIF's default shape only has FINGERPRINT, so fall back to the
         // brand/product/device inside it, as PlayIntegritySpoofService does.
-        final String[] head = fingerprintHead(fields.get("FINGERPRINT"));
+        final String fingerprint = fields.get("FINGERPRINT");
+        final String[] head = fingerprintHead(fingerprint);
+        final String[] tail = fingerprintTail(fingerprint);
+        final String product = firstNonEmpty(fields.get("PRODUCT"), head != null ? head[1] : null);
+        final String device = firstNonEmpty(fields.get("DEVICE"), head != null ? head[2] : null);
         setStagedProp(PIF_PRODUCT_PROP_PREFIX + "manufacturer", fields.get("MANUFACTURER"));
         setStagedProp(PIF_PRODUCT_PROP_PREFIX + "brand", firstNonEmpty(
                 fields.get("BRAND"), head != null ? head[0] : null));
         setStagedProp(PIF_PRODUCT_PROP_PREFIX + "model", fields.get("MODEL"));
-        setStagedProp(PIF_PRODUCT_PROP_PREFIX + "device", firstNonEmpty(
-                fields.get("DEVICE"), head != null ? head[2] : null));
-        setStagedProp(PIF_PRODUCT_PROP_PREFIX + "name", firstNonEmpty(
-                fields.get("PRODUCT"), head != null ? head[1] : null));
+        setStagedProp(PIF_PRODUCT_PROP_PREFIX + "device", device);
+        setStagedProp(PIF_PRODUCT_PROP_PREFIX + "name", product);
         final String buildId = firstNonEmpty(
                 fields.get("*.build.id"), fields.get("ID"),
-                buildIdFromFingerprint(fields.get("FINGERPRINT")));
+                tail != null ? tail[1] : null);
         setStagedProp(PIF_BUILD_ID_PROP, buildId);
         setStagedProp(PIF_SECURITY_PATCH_PROP, firstNonEmpty(
                 fields.get("*.security_patch"), fields.get("SECURITY_PATCH"),
@@ -580,8 +594,27 @@ public class AxSpoofManager implements IAxSpoofManager {
         setStagedProp(PIF_API_LEVEL_PROP, firstNonEmpty(
                 fields.get("*api_level"),
                 PixelDeviceRepository.resolveInitialSdkInt(
-                        firstNonEmpty(fields.get("DEVICE"), head != null ? head[2] : null),
-                        fields.get("DEVICE_INITIAL_SDK_INT"))));
+                        device, fields.get("DEVICE_INITIAL_SDK_INT"))));
+        final String release = firstNonEmpty(fields.get("RELEASE"), tail != null ? tail[0] : null);
+        final String incremental = firstNonEmpty(
+                fields.get("INCREMENTAL"), tail != null ? tail[2] : null);
+        final String buildType = firstNonEmpty(
+                fields.get("*.build.type"), fields.get("TYPE"), tail != null ? tail[3] : null);
+        final String buildTags = firstNonEmpty(
+                fields.get("*.build.tags"), fields.get("TAGS"), tail != null ? tail[4] : null);
+        final String derivedFlavor = (product != null && buildType != null)
+                ? (product + "-" + buildType) : null;
+        final String derivedDescription = (derivedFlavor != null && release != null
+                && buildId != null && incremental != null && buildTags != null)
+                ? (derivedFlavor + " " + release + " " + buildId + " "
+                        + incremental + " " + buildTags)
+                : null;
+        setStagedProp(PIF_BUILD_TYPE_PROP, buildType);
+        setStagedProp(PIF_BUILD_TAGS_PROP, buildTags);
+        setStagedProp(PIF_BUILD_FLAVOR_PROP, firstNonEmpty(
+                fields.get("ro.build.flavor"), derivedFlavor));
+        setStagedProp(PIF_BUILD_DESCRIPTION_PROP, firstNonEmpty(
+                fields.get("ro.build.description"), derivedDescription));
         stageCustomProps(fields);
     }
 
@@ -601,7 +634,9 @@ public class AxSpoofManager implements IAxSpoofManager {
                 if (key.indexOf('.') < 0 && key.indexOf('*') < 0) continue;
                 if (key.equals("*") || key.startsWith("persist.sys.pif.")) continue;
                 if (key.equals("*.build.id") || key.equals("*.security_patch")
-                        || key.equals("*api_level")) continue;
+                        || key.equals("*api_level") || key.equals("*.build.type")
+                        || key.equals("*.build.tags") || key.equals("ro.build.description")
+                        || key.equals("ro.build.flavor")) continue;
                 if (value == null || value.isEmpty()) continue;
                 final String entry = key + "=" + value;
                 if (entry.length() > PROP_VALUE_MAX_CHARS) {
@@ -672,13 +707,19 @@ public class AxSpoofManager implements IAxSpoofManager {
         return head.length == 3 ? head : null;
     }
 
-    /** Format: brand/product/device:release/id/incremental:type/tags */
-    private static String buildIdFromFingerprint(String fingerprint) {
+    /**
+     * {release, id, incremental, type, tags} from
+     * brand/product/device:release/id/incremental:type/tags.
+     */
+    private static String[] fingerprintTail(String fingerprint) {
         if (fingerprint == null) return null;
         final int colon = fingerprint.indexOf(':');
         if (colon < 0) return null;
         final String[] rest = fingerprint.substring(colon + 1).split("/");
-        return rest.length >= 4 ? rest[1] : null;
+        if (rest.length < 4) return null;
+        final String[] incAndType = rest[2].split(":");
+        if (incAndType.length != 2) return null;
+        return new String[] { rest[0], rest[1], incAndType[0], incAndType[1], rest[3] };
     }
 
     /**

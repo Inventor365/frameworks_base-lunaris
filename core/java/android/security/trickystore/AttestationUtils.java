@@ -7,6 +7,8 @@ import android.security.keystore.KeyProperties;
 import android.util.Log;
 
 import com.android.internal.org.bouncycastle.asn1.*;
+import com.android.internal.org.bouncycastle.asn1.x509.Extension;
+import com.android.internal.org.bouncycastle.cert.X509CertificateHolder;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -15,6 +17,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.security.*;
 import java.security.cert.*;
+import java.security.spec.ECGenParameterSpec;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @hide
@@ -22,7 +26,9 @@ import java.security.cert.*;
 public final class AttestationUtils {
     private static final String TAG = "AttestationUtils";
 
-    private static final File CONFIG_DIR = new File("/data/adb/tricky_store");
+    private static final File CONFIG_DIR = new File("/data/system/trickystore");
+    private static final File LEGACY_SYSTEM_DIR = new File("/data/system/tricky_store");
+    private static final File LEGACY_CONFIG_DIR = new File("/data/adb/tricky_store");
     private static final File BOOT_KEY_FILE = new File(CONFIG_DIR, "boot_key");
     private static final File HBK_FILE = new File(CONFIG_DIR, "hbk");
 
@@ -34,7 +40,7 @@ public final class AttestationUtils {
     private static boolean sBootKeyFallback;
     private static boolean sBootHashFallback;
     private static byte[] sBootKey;
-    private static byte[] sBootHash;
+    private static volatile byte[] sBootHash;
     private static volatile boolean sTeeBroken = false;
 
     private AttestationUtils() {}
@@ -47,20 +53,29 @@ public final class AttestationUtils {
         return sTeeBroken;
     }
 
+    private static boolean isAllZeros(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return true;
+        for (byte b : bytes) {
+            if (b != 0) return false;
+        }
+        return true;
+    }
+
     public static void invalidateFallbackBootState() {
         sKeyboxVersion = new Object();
     }
 
     public static synchronized byte[] getBootKey() {
         Object version = sKeyboxVersion;
-        if (sBootKey == null || (sBootKeyFallback && sBootKeyVersion != version)) {
+        if (sBootKey == null || isAllZeros(sBootKey)
+                || (sBootKeyFallback && sBootKeyVersion != version)) {
             sBootKeyVersion = version;
             sBootKey = getBootKeyFromProp();
-            sBootKeyFallback = sBootKey == null;
-            if (sBootKey == null) {
+            sBootKeyFallback = sBootKey == null || isAllZeros(sBootKey);
+            if (sBootKey == null || isAllZeros(sBootKey)) {
                 sBootKey = getBootKeyFromKeybox();
             }
-            if (sBootKey == null) {
+            if (sBootKey == null || isAllZeros(sBootKey)) {
                 sBootKey = loadOrCreatePersisted(BOOT_KEY_FILE);
             }
         }
@@ -137,7 +152,8 @@ public final class AttestationUtils {
             return null;
         }
         try {
-            return hexStringToByteArray(digest);
+            byte[] parsed = hexStringToByteArray(digest);
+            return isAllZeros(parsed) ? null : parsed;
         } catch (Exception e) {
             Log.e(TAG, "Failed to parse vbmeta.public_key_digest", e);
             return null;
@@ -146,17 +162,24 @@ public final class AttestationUtils {
 
     public static synchronized byte[] getBootHash() {
         Object version = sKeyboxVersion;
-        if (sBootHash == null || (sBootHashFallback && sBootHashVersion != version)) {
+        if (sBootHash == null || isAllZeros(sBootHash)
+                || (sBootHashFallback && sBootHashVersion != version)) {
             sBootHashVersion = version;
             sBootHash = getBootHashFromProp();
-            if (sBootHash == null && !sTeeBroken) {
-                sBootHash = extractBootHashFromTee();
+            if (sBootHash == null || isAllZeros(sBootHash)) {
+                sBootHash = readPersisted(HBK_FILE);
             }
-            sBootHashFallback = sBootHash == null;
-            if (sBootHash == null) {
+            if ((sBootHash == null || isAllZeros(sBootHash)) && !sTeeBroken) {
+                sBootHash = extractBootHashFromTee();
+                if (sBootHash != null && !isAllZeros(sBootHash)) {
+                    writePersisted(HBK_FILE, sBootHash);
+                }
+            }
+            sBootHashFallback = sBootHash == null || isAllZeros(sBootHash);
+            if (sBootHash == null || isAllZeros(sBootHash)) {
                 sBootHash = deriveBootHashFromKeybox();
             }
-            if (sBootHash == null) {
+            if (sBootHash == null || isAllZeros(sBootHash)) {
                 // Persisted values have no measurement provenance and may predate
                 // an OTA. Use them only after current hardware/keybox sources.
                 sBootHash = loadOrCreatePersisted(HBK_FILE);
@@ -165,10 +188,48 @@ public final class AttestationUtils {
         return sBootHash;
     }
 
-    public static synchronized void initBootHash() {
-        byte[] hash = getBootHash();
-        if (!sBootHashFallback && getBootHashFromProp() == null) {
+    public static void initBootHash() {
+        byte[] hash = getBootHashFromProp();
+        if (hash != null && !isAllZeros(hash)) {
+            sBootHash = hash;
+            return;
+        }
+        hash = readPersisted(HBK_FILE);
+        if (hash != null && !isAllZeros(hash)) {
+            sBootHash = hash;
             setVbmetaDigestProp(bytesToHex(hash));
+            return;
+        }
+        // TEE extraction generates an attested key, which blocks on keystore2, KeyMint
+        // and RKPD. SystemServer calls this from startBootstrapServices(), with the
+        // watchdog armed and RKPD not yet running, so never extract inline.
+        new Thread(() -> {
+            waitForBootCompleted();
+            synchronized (AttestationUtils.class) {
+                byte[] teeHash = extractBootHashFromTee();
+                if (teeHash != null && !isAllZeros(teeHash)) {
+                    sBootHash = teeHash;
+                    sBootHashFallback = false;
+                    writePersisted(HBK_FILE, teeHash);
+                    setVbmetaDigestProp(bytesToHex(teeHash));
+                } else {
+                    byte[] fallback = getBootHash();
+                    if (fallback != null && !isAllZeros(fallback)) {
+                        setVbmetaDigestProp(bytesToHex(fallback));
+                    }
+                }
+            }
+        }, "TrickyStore-BootHash").start();
+    }
+
+    private static void waitForBootCompleted() {
+        for (int i = 0; i < 120 && !SystemProperties.getBoolean("sys.boot_completed", false);
+                i++) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                return;
+            }
         }
     }
 
@@ -263,7 +324,8 @@ public final class AttestationUtils {
             return null;
         }
         try {
-            return hexStringToByteArray(digest);
+            byte[] parsed = hexStringToByteArray(digest);
+            return isAllZeros(parsed) ? null : parsed;
         } catch (Exception e) {
             Log.e(TAG, "Failed to parse vbmeta.digest", e);
             return null;
@@ -283,7 +345,25 @@ public final class AttestationUtils {
         }
     }
 
+    private static volatile int sAttestVersion = -1;
+    private static volatile int sKeymasterVersion = -1;
+    private static final AtomicBoolean sVersionProbeRan = new AtomicBoolean(false);
+
     public static int getAttestVersion() {
+        if (sAttestVersion > 0) return sAttestVersion;
+        detectKeyMintVersions();
+        return sAttestVersion > 0 ? sAttestVersion : attestVersionFromSdk();
+    }
+
+    public static int getKeymasterVersion() {
+        if (sKeymasterVersion > 0) return sKeymasterVersion;
+        detectKeyMintVersions();
+        if (sKeymasterVersion > 0) return sKeymasterVersion;
+        int attestVersion = attestVersionFromSdk();
+        return attestVersion == 4 ? 41 : attestVersion;
+    }
+
+    private static int attestVersionFromSdk() {
         switch (Build.VERSION.SDK_INT) {
             case Build.VERSION_CODES.Q:
             case Build.VERSION_CODES.R:
@@ -301,9 +381,49 @@ public final class AttestationUtils {
         }
     }
 
-    public static int getKeymasterVersion() {
-        int attestVersion = getAttestVersion();
-        return attestVersion == 4 ? 41 : attestVersion;
+    private static void detectKeyMintVersions() {
+        if (!sVersionProbeRan.compareAndSet(false, true)) return;
+        final String alias = "trickystore_attestation_key";
+        try {
+            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance(
+                    KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
+            kpg.initialize(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+                    .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
+                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    .setAttestationChallenge(new byte[] {0x74, 0x72, 0x69, 0x63})
+                    .build());
+            kpg.generateKeyPair();
+            java.security.cert.Certificate[] chain = ks.getCertificateChain(alias);
+            if (chain != null && chain.length > 0 && chain[0] instanceof X509Certificate) {
+                parseAndCacheVersions((X509Certificate) chain[0]);
+            }
+            try {
+                ks.deleteEntry(alias);
+            } catch (Exception ignored) {
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "KeyMint version probe failed; using SDK-based attestation version", t);
+        }
+    }
+
+    private static void parseAndCacheVersions(X509Certificate leaf) {
+        try {
+            if (leaf.getExtensionValue(CertificateGenerator.ATTESTATION_OID.getId()) == null) {
+                return;
+            }
+            X509CertificateHolder holder = new X509CertificateHolder(leaf.getEncoded());
+            Extension extension = holder.getExtension(CertificateGenerator.ATTESTATION_OID);
+            ASN1Sequence seq = ASN1Sequence.getInstance(extension.getExtnValue().getOctets());
+            int av = ASN1Integer.getInstance(seq.getObjectAt(0)).getValue().intValue();
+            int kv = ASN1Integer.getInstance(seq.getObjectAt(2)).getValue().intValue();
+            if (av > 0) sAttestVersion = av;
+            if (kv > 0) sKeymasterVersion = kv;
+            Log.i(TAG, "Detected KeyMint attestationVersion=" + av + " keymasterVersion=" + kv);
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to parse KeyMint attestation versions", t);
+        }
     }
 
     public static int getPatchLevel(boolean isLong) {
@@ -420,15 +540,23 @@ public final class AttestationUtils {
 
     private static byte[] readPersisted(File file) {
         if (!file.isFile()) {
-            return null;
+            File legacySys = new File(LEGACY_SYSTEM_DIR, file.getName());
+            File legacyAdb = new File(LEGACY_CONFIG_DIR, file.getName());
+            if (legacySys.isFile()) {
+                file = legacySys;
+            } else if (legacyAdb.isFile()) {
+                file = legacyAdb;
+            } else {
+                return null;
+            }
         }
         try {
             byte[] data = Files.readAllBytes(file.toPath());
-            if (data.length == 32) {
+            if (data.length == 32 && !isAllZeros(data)) {
                 return data;
             }
             Log.w(TAG, "Persisted value at " + file + " has unexpected length "
-                    + data.length + ", ignoring");
+                    + data.length + " or is all zeros, ignoring");
         } catch (IOException e) {
             Log.w(TAG, "Failed to read persisted value from " + file, e);
         }
