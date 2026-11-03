@@ -430,6 +430,14 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
         if (callingAppId < Process.FIRST_APPLICATION_UID) {
             return false;
         }
+        // A hidden package must still see itself: without this, DataBackup, KSU managers,
+        // MT Manager and the rest of ROOT_PACKAGES couldn't start their own activities or
+        // change their own components ("Unable to find explicit activity").
+        final PackageStateInternal target =
+                snapshot.getPackageStateInternal(targetPackageName, Process.SYSTEM_UID);
+        if (target != null && target.getAppId() == callingAppId) {
+            return false;
+        }
         final Pair<PackageStateInternal, SharedUserApi> p =
                 snapshot.getPackageOrSharedUser(callingAppId);
         final Object callingSetting = p == null ? null

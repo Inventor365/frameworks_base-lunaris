@@ -18,7 +18,6 @@ package android.security.trickystore;
 
 import android.app.ActivityManager;
 import android.app.IActivityManager;
-import android.os.Looper;
 import android.os.RemoteException;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -38,7 +37,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @hide
@@ -84,7 +82,6 @@ public class TrickyStoreService {
     private volatile String mLastTargetsContent = null;
 
     private volatile Boolean mTeeBroken = null;
-    private final AtomicBoolean mTeeCheckPending = new AtomicBoolean(false);
     // A "healthy" result is cached for the process lifetime; a "broken" one is
     // re-checked after this long, so one transient keystore failure (early boot,
     // exhausted RKP key pool) doesn't force GENERATE mode until the next reboot.
@@ -207,31 +204,13 @@ public class TrickyStoreService {
         String fetch(IActivityManager am) throws RemoteException;
     }
 
-    private static final String[] DEFAULT_ATTESTATION_TARGETS = {
-        "android",
-        "com.google.android.gms",
-        "com.google.android.gsf",
-        "com.android.vending",
-        "com.google.android.contactkeys",
-        "com.google.android.ims",
-        "com.google.android.safetycore",
-        "com.google.android.apps.walletnfcrel",
-        "com.google.android.apps.nbu.paisa.user",
-    };
-
-    private static void applyDefaultTargets(Map<String, Mode> modes) {
-        for (String pkg : DEFAULT_ATTESTATION_TARGETS) {
-            modes.putIfAbsent(pkg, Mode.AUTO);
-        }
-    }
-
     public synchronized void refreshTargets() {
         FetchResult fetched = fetchFromAms(am -> am.getSpoofTrickyStoreTarget());
         if (!fetched.success) return;
         if (fetched.value == null || fetched.value.trim().isEmpty()) {
-            Map<String, Mode> modes = new HashMap<>();
-            applyDefaultTargets(modes);
-            mPackageModes = Collections.unmodifiableMap(modes);
+            // An empty list is the user turning targets off; AxSpoofManager seeds
+            // DEFAULT_TARGET_LIST into a setting that was never set.
+            mPackageModes = Collections.emptyMap();
             mLastTargetsContent = null;
             return;
         }
@@ -242,7 +221,6 @@ public class TrickyStoreService {
         try {
             Map<String, Mode> parsed = (content.startsWith("[") || content.startsWith("{"))
                     ? parseTargetsJson(content) : parseTargetsText(content);
-            applyDefaultTargets(parsed);
             mPackageModes = Collections.unmodifiableMap(parsed);
             mLastTargetsContent = content;
             Log.i(TAG, "Updated target policies: " + parsed.size());
@@ -521,26 +499,6 @@ public class TrickyStoreService {
 
     private void ensureTeeStatus() {
         if (isTeeStatusFresh()) return;
-        if (Looper.getMainLooper() != null && Looper.getMainLooper().isCurrentThread()) {
-            if (!mTeeCheckPending.compareAndSet(false, true)) {
-                return;
-            }
-            new Thread(() -> {
-                try {
-                    synchronized (this) {
-                        if (!isTeeStatusFresh()) {
-                            boolean broken = checkTeeBroken();
-                            mTeeBroken = broken;
-                            mTeeCheckedAtMs = System.currentTimeMillis();
-                            AttestationUtils.setTeeBroken(broken);
-                        }
-                    }
-                } finally {
-                    mTeeCheckPending.set(false);
-                }
-            }, "TrickyStore-TeeCheckAsync").start();
-            return;
-        }
         synchronized (this) {
             if (isTeeStatusFresh()) return;
             boolean broken = checkTeeBroken();

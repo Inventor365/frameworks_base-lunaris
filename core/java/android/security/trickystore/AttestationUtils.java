@@ -7,8 +7,6 @@ import android.security.keystore.KeyProperties;
 import android.util.Log;
 
 import com.android.internal.org.bouncycastle.asn1.*;
-import com.android.internal.org.bouncycastle.asn1.x509.Extension;
-import com.android.internal.org.bouncycastle.cert.X509CertificateHolder;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -17,8 +15,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.security.*;
 import java.security.cert.*;
-import java.security.spec.ECGenParameterSpec;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @hide
@@ -345,21 +341,16 @@ public final class AttestationUtils {
         }
     }
 
-    private static volatile int sAttestVersion = -1;
-    private static volatile int sKeymasterVersion = -1;
-    private static final AtomicBoolean sVersionProbeRan = new AtomicBoolean(false);
-
+    // The SDK mapping, as Infinity X does. Probing the real KeyMint version meant an extra
+    // attested key generation inside every target process (GMS, Wallet, banking apps):
+    // an RKP key each, a keystore round trip on whatever thread asked, and an alias the
+    // app could see.
     public static int getAttestVersion() {
-        if (sAttestVersion > 0) return sAttestVersion;
-        detectKeyMintVersions();
-        return sAttestVersion > 0 ? sAttestVersion : attestVersionFromSdk();
+        return attestVersionFromSdk();
     }
 
     public static int getKeymasterVersion() {
-        if (sKeymasterVersion > 0) return sKeymasterVersion;
-        detectKeyMintVersions();
-        if (sKeymasterVersion > 0) return sKeymasterVersion;
-        int attestVersion = attestVersionFromSdk();
+        int attestVersion = getAttestVersion();
         return attestVersion == 4 ? 41 : attestVersion;
     }
 
@@ -378,51 +369,6 @@ public final class AttestationUtils {
                 return 300;
             default:
                 return 400;
-        }
-    }
-
-    private static void detectKeyMintVersions() {
-        if (!sVersionProbeRan.compareAndSet(false, true)) return;
-        final String alias = "trickystore_attestation_key";
-        try {
-            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
-            ks.load(null);
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance(
-                    KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
-            kpg.initialize(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
-                    .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
-                    .setDigests(KeyProperties.DIGEST_SHA256)
-                    .setAttestationChallenge(new byte[] {0x74, 0x72, 0x69, 0x63})
-                    .build());
-            kpg.generateKeyPair();
-            java.security.cert.Certificate[] chain = ks.getCertificateChain(alias);
-            if (chain != null && chain.length > 0 && chain[0] instanceof X509Certificate) {
-                parseAndCacheVersions((X509Certificate) chain[0]);
-            }
-            try {
-                ks.deleteEntry(alias);
-            } catch (Exception ignored) {
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "KeyMint version probe failed; using SDK-based attestation version", t);
-        }
-    }
-
-    private static void parseAndCacheVersions(X509Certificate leaf) {
-        try {
-            if (leaf.getExtensionValue(CertificateGenerator.ATTESTATION_OID.getId()) == null) {
-                return;
-            }
-            X509CertificateHolder holder = new X509CertificateHolder(leaf.getEncoded());
-            Extension extension = holder.getExtension(CertificateGenerator.ATTESTATION_OID);
-            ASN1Sequence seq = ASN1Sequence.getInstance(extension.getExtnValue().getOctets());
-            int av = ASN1Integer.getInstance(seq.getObjectAt(0)).getValue().intValue();
-            int kv = ASN1Integer.getInstance(seq.getObjectAt(2)).getValue().intValue();
-            if (av > 0) sAttestVersion = av;
-            if (kv > 0) sKeymasterVersion = kv;
-            Log.i(TAG, "Detected KeyMint attestationVersion=" + av + " keymasterVersion=" + kv);
-        } catch (Throwable t) {
-            Log.w(TAG, "Failed to parse KeyMint attestation versions", t);
         }
     }
 
