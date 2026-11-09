@@ -23,6 +23,7 @@ import java.io.ByteArrayInputStream;
 import java.math.BigInteger;
 import java.security.AlgorithmParameters;
 import java.security.KeyFactory;
+import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
@@ -30,7 +31,6 @@ import java.security.spec.ECGenParameterSpec;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPoint;
 import java.security.spec.ECPublicKeySpec;
-import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.List;
 
@@ -46,6 +46,16 @@ import vendor.evo.duckrkp.IDuckRkp;
 final class DuckRkpNative {
     private static final int LIMIT = 0xa000;
     private static final String SERVICE = "vendor.evo.duckrkp.IDuckRkp/default";
+    private static final BigInteger ED25519_P =
+            BigInteger.ONE.shiftLeft(255).subtract(BigInteger.valueOf(19));
+    private static final BigInteger ED25519_L = BigInteger.ONE.shiftLeft(252)
+            .add(new BigInteger("27742317777372353535851937790883648493"));
+    private static final BigInteger ED25519_D = BigInteger.valueOf(-121665)
+            .multiply(BigInteger.valueOf(121666).modInverse(ED25519_P)).mod(ED25519_P);
+    private static final BigInteger ED25519_D2 =
+            ED25519_D.multiply(BigInteger.TWO).mod(ED25519_P);
+    private static final BigInteger ED25519_I = BigInteger.TWO.modPow(
+            ED25519_P.subtract(BigInteger.ONE).shiftRight(2), ED25519_P);
 
     private DuckRkpNative() {}
 
@@ -174,16 +184,116 @@ final class DuckRkpNative {
         require(integer(headers.get(number(1))) == algorithm);
         byte[] payload = bytes(sign1.get(2));
         byte[] signature = bytes(sign1.get(3));
+        byte[] signed = encode(arrayOf(text("Signature1"), bytes(protectedBytes),
+                bytes(new byte[0]), bytes(payload)));
+        if (algorithm == -8) {
+            require(verifyEd25519(ed25519Key(key), signed, signature));
+            return payload;
+        }
         PublicKey publicKey = publicKey(key);
-        String name = algorithm == -8 ? "Ed25519"
-                : algorithm == -7 ? "SHA256withECDSA" : "SHA384withECDSA";
+        String name = algorithm == -7 ? "SHA256withECDSA" : "SHA384withECDSA";
         Signature verifier = Signature.getInstance(name);
         verifier.initVerify(publicKey);
-        verifier.update(encode(arrayOf(text("Signature1"), bytes(protectedBytes),
-                bytes(new byte[0]), bytes(payload))));
-        require(verifier.verify(algorithm == -8 ? signature : derSignature(signature,
-                algorithm == -7 ? 32 : 48)));
+        verifier.update(signed);
+        require(verifier.verify(derSignature(signature, algorithm == -7 ? 32 : 48)));
         return payload;
+    }
+
+    private static byte[] ed25519Key(Map key) throws Exception {
+        require(integer(key.get(number(1))) == 1 && integer(key.get(number(3))) == -8
+                && integer(key.get(number(-1))) == 6 && !key.getKeys().contains(number(-3)));
+        byte[] x = bytes(key.get(number(-2)));
+        require(x.length == 32);
+        return x;
+    }
+
+    private static boolean verifyEd25519(byte[] publicKey, byte[] message, byte[] signature)
+            throws Exception {
+        if (publicKey.length != 32 || signature.length != 64) return false;
+        BigInteger[] a = decodeEd25519Point(publicKey);
+        BigInteger[] r = decodeEd25519Point(Arrays.copyOfRange(signature, 0, 32));
+        BigInteger s = littleEndian(signature, 32, 32);
+        if (s.compareTo(ED25519_L) >= 0) return false;
+        MessageDigest sha512 = MessageDigest.getInstance("SHA-512");
+        sha512.update(signature, 0, 32);
+        sha512.update(publicKey);
+        sha512.update(message);
+        BigInteger k = littleEndian(sha512.digest(), 0, 64).mod(ED25519_L);
+        BigInteger by = BigInteger.valueOf(4)
+                .multiply(BigInteger.valueOf(5).modInverse(ED25519_P)).mod(ED25519_P);
+        BigInteger bx = recoverEd25519X(by, false);
+        BigInteger[] base = {bx, by, BigInteger.ONE, bx.multiply(by).mod(ED25519_P)};
+        BigInteger[] lhs = ed25519ScalarMult(base, s);
+        BigInteger[] rhs = ed25519Add(r, ed25519ScalarMult(a, k));
+        return lhs[0].multiply(rhs[2]).subtract(rhs[0].multiply(lhs[2]))
+                        .mod(ED25519_P).equals(BigInteger.ZERO)
+                && lhs[1].multiply(rhs[2]).subtract(rhs[1].multiply(lhs[2]))
+                        .mod(ED25519_P).equals(BigInteger.ZERO);
+    }
+
+    private static BigInteger littleEndian(byte[] bytes, int offset, int length) {
+        byte[] reversed = new byte[length];
+        for (int i = 0; i < length; i++) reversed[i] = bytes[offset + length - 1 - i];
+        return new BigInteger(1, reversed);
+    }
+
+    private static BigInteger[] decodeEd25519Point(byte[] encoded) throws Exception {
+        require(encoded.length == 32);
+        byte[] reversed = new byte[32];
+        for (int i = 0; i < 32; i++) reversed[i] = encoded[31 - i];
+        boolean sign = (reversed[0] & 0x80) != 0;
+        reversed[0] &= 0x7f;
+        BigInteger y = new BigInteger(1, reversed);
+        require(y.compareTo(ED25519_P) < 0);
+        BigInteger x = recoverEd25519X(y, sign);
+        return new BigInteger[] {x, y, BigInteger.ONE, x.multiply(y).mod(ED25519_P)};
+    }
+
+    private static BigInteger recoverEd25519X(BigInteger y, boolean sign) throws Exception {
+        BigInteger y2 = y.multiply(y).mod(ED25519_P);
+        BigInteger u = y2.subtract(BigInteger.ONE).mod(ED25519_P);
+        BigInteger v = ED25519_D.multiply(y2).add(BigInteger.ONE).mod(ED25519_P);
+        BigInteger xx = u.multiply(v.modInverse(ED25519_P)).mod(ED25519_P);
+        BigInteger x = xx.modPow(ED25519_P.add(BigInteger.valueOf(3)).shiftRight(3), ED25519_P);
+        if (!x.multiply(x).subtract(xx).mod(ED25519_P).equals(BigInteger.ZERO)) {
+            x = x.multiply(ED25519_I).mod(ED25519_P);
+        }
+        require(x.multiply(x).subtract(xx).mod(ED25519_P).equals(BigInteger.ZERO));
+        if (x.equals(BigInteger.ZERO)) {
+            require(!sign);
+        } else if (x.testBit(0) != sign) {
+            x = ED25519_P.subtract(x);
+        }
+        return x;
+    }
+
+    private static BigInteger[] ed25519Add(BigInteger[] p1, BigInteger[] p2) {
+        BigInteger a = p1[1].subtract(p1[0]).multiply(p2[1].subtract(p2[0])).mod(ED25519_P);
+        BigInteger b = p1[1].add(p1[0]).multiply(p2[1].add(p2[0])).mod(ED25519_P);
+        BigInteger c = p1[3].multiply(ED25519_D2).mod(ED25519_P).multiply(p2[3]).mod(ED25519_P);
+        BigInteger d = p1[2].multiply(BigInteger.TWO).multiply(p2[2]).mod(ED25519_P);
+        BigInteger e = b.subtract(a).mod(ED25519_P);
+        BigInteger f = d.subtract(c).mod(ED25519_P);
+        BigInteger g = d.add(c).mod(ED25519_P);
+        BigInteger h = b.add(a).mod(ED25519_P);
+        return new BigInteger[] {
+                e.multiply(f).mod(ED25519_P),
+                g.multiply(h).mod(ED25519_P),
+                f.multiply(g).mod(ED25519_P),
+                e.multiply(h).mod(ED25519_P)
+        };
+    }
+
+    private static BigInteger[] ed25519ScalarMult(BigInteger[] point, BigInteger scalar) {
+        BigInteger[] acc = {BigInteger.ZERO, BigInteger.ONE, BigInteger.ONE, BigInteger.ZERO};
+        BigInteger[] cur = point;
+        for (int i = 0; i < scalar.bitLength(); i++) {
+            if (scalar.testBit(i)) {
+                acc = ed25519Add(acc, cur);
+            }
+            cur = ed25519Add(cur, cur);
+        }
+        return acc;
     }
 
     private static PublicKey publicKey(Map key) throws Exception {
@@ -191,15 +301,6 @@ final class DuckRkpNative {
         int algorithm = integer(key.get(number(3)));
         int curve = integer(key.get(number(-1)));
         byte[] x = bytes(key.get(number(-2)));
-        if (type == 1 && algorithm == -8 && curve == 6) {
-            require(x.length == 32 && !key.getKeys().contains(number(-3)));
-            byte[] spki = new byte[44];
-            byte[] prefix = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
-                    0x03, 0x21, 0x00};
-            System.arraycopy(prefix, 0, spki, 0, prefix.length);
-            System.arraycopy(x, 0, spki, prefix.length, x.length);
-            return KeyFactory.getInstance("Ed25519").generatePublic(new X509EncodedKeySpec(spki));
-        }
         require(type == 2 && ((algorithm == -7 && curve == 1 && x.length == 32)
                 || (algorithm == -35 && curve == 2 && x.length == 48)));
         AlgorithmParameters parameters = AlgorithmParameters.getInstance("EC");

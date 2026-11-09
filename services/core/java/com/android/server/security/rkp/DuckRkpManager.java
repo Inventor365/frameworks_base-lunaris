@@ -122,7 +122,9 @@ public final class DuckRkpManager {
                 mFailure = saved.getString("error");
                 mDetail = saved.getInt("detail");
                 if (mAutomaticPaused && (mFailure.equals("hal_unsupported")
-                        || mFailure.equals("hal_rejected")) && DuckRkpNative.available()) {
+                        || mFailure.equals("hal_rejected")
+                        || (mFailure.equals("http_error") && mDetail == 444))
+                        && DuckRkpNative.available()) {
                     mAutomaticPaused = false;
                     mFailure = "";
                     mFailures = 0;
@@ -174,8 +176,9 @@ public final class DuckRkpManager {
         state.putBoolean("automatic_paused", mAutomaticPaused);
         state.putBoolean("waiting_for_network", mWaitingForNetwork);
         state.putLong("revision", mRevision);
+        long cooldownMs = mFailure.isEmpty() ? COOLDOWN_MS : 5000;
         state.putLong("retry_after_ms", Math.max(0,
-                COOLDOWN_MS - (SystemClock.elapsedRealtime() - mLastAttempt)));
+                cooldownMs - (SystemClock.elapsedRealtime() - mLastAttempt)));
         state.putString("stage", mStage);
         state.putString("error", mBusy && SystemClock.elapsedRealtime() - mStartedAt >= TIMEOUT_MS
                 ? "timeout" : mFailure);
@@ -189,6 +192,11 @@ public final class DuckRkpManager {
         }
         putEnabled(enabled);
         cancelProvisioning();
+        if (enabled) {
+            mAutomaticPaused = false;
+            mFailures = 0;
+            mNextAttempt = 0;
+        }
         if (!mAutomaticPaused) mFailure = "";
         saveAutomaticState();
         requestSchedule();
@@ -204,7 +212,8 @@ public final class DuckRkpManager {
             throw new IllegalStateException("Device RKP is disabled");
         }
         long now = SystemClock.elapsedRealtime();
-        if (mBusy || now - mLastAttempt < COOLDOWN_MS) {
+        long cooldownMs = (manual && !mFailure.isEmpty()) ? 5000 : COOLDOWN_MS;
+        if (mBusy || now - mLastAttempt < cooldownMs) {
             throw new IllegalStateException("An RKP request is active or was attempted recently");
         }
         if (manual) mFailures = 0;
