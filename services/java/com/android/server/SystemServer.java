@@ -171,6 +171,7 @@ import com.android.server.coverage.CoverageService;
 import com.android.server.cpu.CpuMonitorService;
 import com.android.server.crashrecovery.CrashRecoveryAdaptor;
 import com.android.server.lunaris.CustomDeviceConfigService;
+import com.android.server.lunaris.RunawayDaemonGuard;
 import com.android.server.credentials.CredentialManagerService;
 import com.android.server.criticalevents.CriticalEventLog;
 import com.android.server.devicepolicy.DevicePolicyManagerService;
@@ -2230,6 +2231,10 @@ public final class SystemServer implements Dumpable {
             // DeviceConfig flags.
             t.traceBegin("StartCustomDeviceConfigService");
             mSystemServiceManager.startService(CustomDeviceConfigService.class);
+            t.traceEnd();
+
+            t.traceBegin("StartRunawayDaemonGuard");
+            mSystemServiceManager.startService(RunawayDaemonGuard.class);
             t.traceEnd();
 
             t.traceBegin("StartNetworkManagementService");
