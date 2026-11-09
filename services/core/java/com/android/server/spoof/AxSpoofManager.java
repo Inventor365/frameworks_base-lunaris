@@ -19,8 +19,11 @@ package com.android.server.spoof;
 import android.app.ActivityManager;
 import android.app.ActivityTaskManager;
 import android.app.TaskStackListener;
+import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Handler;
@@ -81,6 +84,7 @@ public class AxSpoofManager implements IAxSpoofManager {
     private static final String SETTINGS_PACKAGE = "com.android.settings";
 
     private static final String PIF_ENABLED_KEY = "spoof_pif_enabled";
+    private static final String TRICKYSTORE_ENABLED_KEY = "spoof_trickystore_enabled";
     private static final String LAST_AUTO_FETCH_KEY = "spoof_pif_last_auto_fetch";
     private static final long AUTO_FETCH_COOLDOWN_MS = TimeUnit.DAYS.toMillis(1);
     private static final long REFETCH_WINDOW_DAYS = 15L;
@@ -113,6 +117,10 @@ public class AxSpoofManager implements IAxSpoofManager {
     private static final String PIF_BUILD_ID_PROP = "persist.sys.pif.build.id";
     private static final String PIF_SECURITY_PATCH_PROP = "persist.sys.pif.security_patch";
     private static final String PIF_API_LEVEL_PROP = "persist.sys.pif.api_level";
+    private static final String PIF_BUILD_TYPE_PROP = "persist.sys.pif.build.type";
+    private static final String PIF_BUILD_TAGS_PROP = "persist.sys.pif.build.tags";
+    private static final String PIF_BUILD_DESCRIPTION_PROP = "persist.sys.pif.build.description";
+    private static final String PIF_BUILD_FLAVOR_PROP = "persist.sys.pif.build.flavor";
     // Config entries the fixed props above don't cover. Slot i holds "name=value", or
     // "*suffix=value" for a leading-* wildcard; the count says how many slots are live.
     // bionic's custom_rom_hide.cpp reads these with the same names and limits.
@@ -123,6 +131,7 @@ public class AxSpoofManager implements IAxSpoofManager {
 
     // Keep fingerprint requests off the handler that watches spoofing settings.
     private final ExecutorService mFingerprintExecutor = Executors.newSingleThreadExecutor();
+    private BroadcastReceiver mPackageAddedReceiver;
     private int mBootstrapRetries;
     // Nothing spoof-related runs until the user first opens Settings (after setup):
     // the config getters below return null, the refresh never starts and GMS is
@@ -203,6 +212,21 @@ public class AxSpoofManager implements IAxSpoofManager {
             Log.i(TAG, "Spoofing off until Settings is opened for the first time");
             registerSettingsWatcher();
         }
+
+        mPackageAddedReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) return;
+                Uri data = intent.getData();
+                String pkg = data != null ? data.getSchemeSpecificPart() : null;
+                if (pkg != null) {
+                    mHandler.post(() -> onPackageAdded(pkg));
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(Intent.ACTION_PACKAGE_ADDED);
+        filter.addDataScheme("package");
+        mContext.registerReceiverAsUser(mPackageAddedReceiver, UserHandle.ALL, filter, null, mHandler);
 
         if (mActivated) scheduleFirstRefresh();
 
@@ -319,6 +343,10 @@ public class AxSpoofManager implements IAxSpoofManager {
         setStagedProp(PIF_BUILD_ID_PROP, null);
         setStagedProp(PIF_SECURITY_PATCH_PROP, null);
         setStagedProp(PIF_API_LEVEL_PROP, null);
+        setStagedProp(PIF_BUILD_TYPE_PROP, null);
+        setStagedProp(PIF_BUILD_TAGS_PROP, null);
+        setStagedProp(PIF_BUILD_DESCRIPTION_PROP, null);
+        setStagedProp(PIF_BUILD_FLAVOR_PROP, null);
         stageCustomProps(null);
     }
 
@@ -338,6 +366,34 @@ public class AxSpoofManager implements IAxSpoofManager {
                 mResolver, Settings.Secure.SPOOF_TRICKYSTORE_TARGET,
                 TrickyStoreService.DEFAULT_TARGET_LIST, UserHandle.USER_SYSTEM);
         Log.i(TAG, "Seeded default TrickyStore targets");
+    }
+
+    private void onPackageAdded(String pkg) {
+        if (!mActivated) return;
+        if (mResolver == null || TrickyStoreService.XPOSED_PACKAGES.contains(pkg)
+                || TrickyStoreService.UNNECESSARY_PACKAGES.contains(pkg)) {
+            return;
+        }
+        if (Settings.System.getIntForUser(
+                mResolver, TRICKYSTORE_ENABLED_KEY, 1, UserHandle.USER_SYSTEM) == 0) return;
+
+        String current = Settings.Secure.getStringForUser(
+                mResolver, Settings.Secure.SPOOF_TRICKYSTORE_TARGET, UserHandle.USER_SYSTEM);
+        String existing = current != null ? current : "";
+        String trimmed = existing.trim();
+        if (trimmed.isEmpty() || trimmed.startsWith("[") || trimmed.startsWith("{")) return;
+
+        for (String raw : existing.split("\n")) {
+            String line = raw.trim();
+            String bare = line.endsWith("!") || line.endsWith("?") || line.endsWith("-")
+                    ? line.substring(0, line.length() - 1).trim() : line;
+            if (pkg.equals(bare)) return;
+        }
+
+        String updated = existing.endsWith("\n") ? existing + pkg : existing + "\n" + pkg;
+        Settings.Secure.putStringForUser(
+                mResolver, Settings.Secure.SPOOF_TRICKYSTORE_TARGET, updated, UserHandle.USER_SYSTEM);
+        Log.i(TAG, "Auto-targeted newly installed package: " + pkg);
     }
 
     /**
@@ -575,10 +631,36 @@ public class AxSpoofManager implements IAxSpoofManager {
                 fields.get("DEVICE"), head != null ? head[2] : null));
         setStagedProp(PIF_PRODUCT_PROP_PREFIX + "name", firstNonEmpty(
                 fields.get("PRODUCT"), head != null ? head[1] : null));
+        final String[] tail = fingerprintTail(fields.get("FINGERPRINT"));
         final String buildId = firstNonEmpty(
                 fields.get("*.build.id"), fields.get("ID"),
                 buildIdFromFingerprint(fields.get("FINGERPRINT")));
         setStagedProp(PIF_BUILD_ID_PROP, buildId);
+        // ro.*.build.type/tags for every partition and ro.build.description/flavor, so they
+        // agree with the spoofed fingerprint. An unofficial ROM reports test-keys on the
+        // partitions bionic doesn't pin, and its own description everywhere.
+        final String type = firstNonEmpty(fields.get("*.build.type"), fields.get("TYPE"),
+                tail != null ? tail[3] : null);
+        final String tags = firstNonEmpty(fields.get("*.build.tags"), fields.get("TAGS"),
+                tail != null ? tail[4] : null);
+        setStagedProp(PIF_BUILD_TYPE_PROP, type);
+        setStagedProp(PIF_BUILD_TAGS_PROP, tags);
+        final String product = firstNonEmpty(
+                fields.get("PRODUCT"), head != null ? head[1] : null);
+        final String release = firstNonEmpty(
+                fields.get("RELEASE"),
+                PixelDeviceRepository.releaseFromFingerprint(fields.get("FINGERPRINT")));
+        final String incremental = firstNonEmpty(
+                fields.get("INCREMENTAL"), tail != null ? tail[2] : null);
+        final boolean haveDescription = product != null && type != null && release != null
+                && buildId != null && incremental != null && tags != null;
+        // Same layout as a stock build: product-type release id incremental tags
+        setStagedProp(PIF_BUILD_DESCRIPTION_PROP, haveDescription
+                ? product + "-" + type + " " + release + " " + buildId + " "
+                        + incremental + " " + tags
+                : null);
+        setStagedProp(PIF_BUILD_FLAVOR_PROP,
+                product != null && type != null ? product + "-" + type : null);
         setStagedProp(PIF_SECURITY_PATCH_PROP, firstNonEmpty(
                 fields.get("*.security_patch"), fields.get("SECURITY_PATCH"),
                 PixelDeviceRepository.securityPatchFromBuildId(buildId)));
@@ -606,7 +688,8 @@ public class AxSpoofManager implements IAxSpoofManager {
                 if (key.indexOf('.') < 0 && key.indexOf('*') < 0) continue;
                 if (key.equals("*") || key.startsWith("persist.sys.pif.")) continue;
                 if (key.equals("*.build.id") || key.equals("*.security_patch")
-                        || key.equals("*api_level")) continue;
+                        || key.equals("*api_level") || key.equals("*.build.type")
+                        || key.equals("*.build.tags")) continue;
                 if (value == null || value.isEmpty()) continue;
                 final String entry = key + "=" + value;
                 if (entry.length() > PROP_VALUE_MAX_CHARS) {
@@ -675,6 +758,18 @@ public class AxSpoofManager implements IAxSpoofManager {
         if (colon < 0) return null;
         final String[] head = fingerprint.substring(0, colon).split("/");
         return head.length == 3 ? head : null;
+    }
+
+    /** {release, id, incremental, type, tags} from brand/product/device:release/id/incremental:type/tags. */
+    private static String[] fingerprintTail(String fingerprint) {
+        if (fingerprint == null) return null;
+        final int first = fingerprint.indexOf(':');
+        final int second = first < 0 ? -1 : fingerprint.indexOf(':', first + 1);
+        if (second < 0) return null;
+        final String[] mid = fingerprint.substring(first + 1, second).split("/");
+        final String[] end = fingerprint.substring(second + 1).split("/");
+        if (mid.length != 3 || end.length != 2) return null;
+        return new String[] {mid[0], mid[1], mid[2], end[0], end[1]};
     }
 
     /** Format: brand/product/device:release/id/incremental:type/tags */
@@ -766,9 +861,25 @@ public class AxSpoofManager implements IAxSpoofManager {
         return mDuckRkp;
     }
 
+    /**
+     * Foreground user, resolved with system identity. Callers of the keybox getter
+     * are attested apps and do not hold INTERACT_ACROSS_USERS.
+     */
+    private static int currentForegroundUserId() {
+        long token = Binder.clearCallingIdentity();
+        try {
+            return ActivityManager.getCurrentUser();
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
     private boolean canReadTrickyStoreKeybox() {
         int uid = Binder.getCallingUid();
         if (uid == android.os.Process.SYSTEM_UID || uid == android.os.Process.ROOT_UID) return true;
+        final int callingUserId = UserHandle.getUserId(uid);
+        if (callingUserId != currentForegroundUserId()
+                && callingUserId != UserHandle.USER_SYSTEM) return false;
         String[] packages = mContext.getPackageManager().getPackagesForUid(uid);
         if (packages == null) return false;
         for (String pkg : packages) {

@@ -216,11 +216,29 @@ public final class PlayIntegritySpoofService {
             mBuildFields.putIfAbsent("PRODUCT", head[1]);
             mBuildFields.putIfAbsent("DEVICE", head[2]);
         }
-        mBuildFields.putIfAbsent("RELEASE", rest[0]);
+        // A Canary fingerprint says CANARY here, which isn't a release; keep a numeric one.
+        final String release = PixelDeviceRepository.releaseFromFingerprint(fp);
+        if (release != null) mBuildFields.putIfAbsent("RELEASE", release);
         mBuildFields.putIfAbsent("ID", rest[1]);
         mBuildFields.putIfAbsent("INCREMENTAL", incrementalAndType[0]);
         mBuildFields.putIfAbsent("TYPE", incrementalAndType[1]);
         mBuildFields.putIfAbsent("TAGS", rest[3]);
+        if (mBuildFields.containsKey("BRAND")) {
+            mBuildFields.putIfAbsent("BRAND_FOR_ATTESTATION", mBuildFields.get("BRAND"));
+        }
+        if (mBuildFields.containsKey("DEVICE")) {
+            mBuildFields.putIfAbsent("DEVICE_FOR_ATTESTATION", mBuildFields.get("DEVICE"));
+        }
+        if (mBuildFields.containsKey("PRODUCT")) {
+            mBuildFields.putIfAbsent("PRODUCT_FOR_ATTESTATION", mBuildFields.get("PRODUCT"));
+        }
+        if (mBuildFields.containsKey("MANUFACTURER")) {
+            mBuildFields.putIfAbsent("MANUFACTURER_FOR_ATTESTATION",
+                    mBuildFields.get("MANUFACTURER"));
+        }
+        if (mBuildFields.containsKey("MODEL")) {
+            mBuildFields.putIfAbsent("MODEL_FOR_ATTESTATION", mBuildFields.get("MODEL"));
+        }
     }
 
     /**

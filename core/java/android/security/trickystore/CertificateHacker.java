@@ -1,6 +1,5 @@
 package android.security.trickystore;
 
-import android.hardware.security.keymint.SecurityLevel;
 import android.security.pif.PlayIntegritySpoofService;
 import android.util.Log;
 
@@ -18,14 +17,15 @@ import com.android.internal.org.bouncycastle.asn1.DERSequence;
 import com.android.internal.org.bouncycastle.asn1.DERTaggedObject;
 import com.android.internal.org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import com.android.internal.org.bouncycastle.asn1.x509.AuthorityKeyIdentifier;
-import com.android.internal.org.bouncycastle.asn1.x509.Extension;
 import com.android.internal.org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
+import com.android.internal.org.bouncycastle.asn1.x509.Extension;
 import com.android.internal.org.bouncycastle.cert.X509CertificateHolder;
 import com.android.internal.org.bouncycastle.cert.X509v3CertificateBuilder;
 import com.android.internal.org.bouncycastle.crypto.digests.SHA256Digest;
 import com.android.internal.org.bouncycastle.crypto.params.ECDomainParameters;
 import com.android.internal.org.bouncycastle.crypto.params.ECPrivateKeyParameters;
 import com.android.internal.org.bouncycastle.crypto.params.RSAKeyParameters;
+import com.android.internal.org.bouncycastle.crypto.params.RSAPrivateCrtKeyParameters;
 import com.android.internal.org.bouncycastle.crypto.signers.ECDSASigner;
 import com.android.internal.org.bouncycastle.crypto.signers.RSADigestSigner;
 import com.android.internal.org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPrivateKey;
@@ -76,9 +76,8 @@ public final class CertificateHacker {
         }
 
         try {
-            CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
-            X509Certificate leaf = (X509Certificate) certFactory.generateCertificate(
-                new ByteArrayInputStream(chain[0].getEncoded()));
+            if (!(chain[0] instanceof X509Certificate)) return chain;
+            X509Certificate leaf = (X509Certificate) chain[0];
 
             byte[] extensionBytes = leaf.getExtensionValue(
                 CertificateGenerator.ATTESTATION_OID.getId());
@@ -89,15 +88,11 @@ public final class CertificateHacker {
             X509CertificateHolder leafHolder = new X509CertificateHolder(leaf.getEncoded());
             Extension extension = leafHolder.getExtension(CertificateGenerator.ATTESTATION_OID);
             ASN1Sequence sequence = ASN1Sequence.getInstance(extension.getExtnValue().getOctets());
-            if (sequence.size() != 8) {
-                Log.w(TAG, "Unexpected attestation KeyDescription length");
-                return chain;
-            }
-            if (ASN1Enumerated.getInstance(sequence.getObjectAt(3)).intValueExact()
-                    == SecurityLevel.STRONGBOX) {
-                return chain;
-            }
             ASN1Encodable[] encodables = sequence.toArray();
+            if (encodables.length < 8 || !(encodables[7] instanceof ASN1Sequence)) {
+                Log.w(TAG, "Invalid attestation KeyDescription structure");
+                return chain;
+            }
             ASN1Sequence teeEnforced = (ASN1Sequence) encodables[7];
 
             Map<Integer, byte[]> attestationIdOverrides = getAttestationIdOverrides();
@@ -125,23 +120,31 @@ public final class CertificateHacker {
 
             String algorithm = leaf.getPublicKey().getAlgorithm();
             KeyBoxManager keyboxManager = TrickyStoreService.getInstance().getKeyBoxManager();
-            KeyBoxManager.KeyBox keybox = keyboxManager.getSigningKeybox(algorithm);
+            KeyBoxManager.KeyBox keybox = keyboxManager.getKeyboxForLeaf(algorithm);
 
             if (keybox == null) {
                 Log.e(TAG, "No keybox for algorithm: " + algorithm);
                 return chain;
             }
 
-            if (isSignedByKeybox(chain, leaf, keybox)) {
-                return chain;
+            // A certificate already signed by the active keybox should not be
+            // signed again on each retrieval. Re-signing ECDSA produces new
+            // bytes and makes getCertificate()/getCertificateChain() diverge.
+            if (chain.length > 1 && chain[1] instanceof X509Certificate
+                    && keybox.certificates.get(0) instanceof X509Certificate) {
+                X509Certificate storedIssuer = (X509Certificate) keybox.certificates.get(0);
+                if (java.util.Arrays.equals(chain[1].getEncoded(), storedIssuer.getEncoded())) {
+                    try {
+                        leaf.verify(storedIssuer.getPublicKey());
+                        return chain;
+                    } catch (Exception ignored) {
+                        // Issuer appears to match but signature does not.
+                    }
+                }
             }
-
             List<Certificate> certificates = new ArrayList<>(keybox.certificates);
-            X509CertificateHolder issuerHolder = new X509CertificateHolder(
-                certificates.get(0).getEncoded());
-
             X509v3CertificateBuilder builder = new X509v3CertificateBuilder(
-                issuerHolder.getSubject(),
+                keybox.getIssuerSubject(),
                 leafHolder.getSerialNumber(),
                 leafHolder.getNotBefore(),
                 leafHolder.getNotAfter(),
@@ -149,9 +152,9 @@ public final class CertificateHacker {
                 leafHolder.getSubjectPublicKeyInfo()
             );
 
-            String signatureAlgorithm = "EC".equalsIgnoreCase(keybox.keyPair.getPrivate().getAlgorithm())
-                    ? "SHA256withECDSA" : "SHA256withRSA";
-            ContentSigner signer = createBCSigner(signatureAlgorithm, keybox.keyPair.getPrivate());
+            ContentSigner signer = createBCSigner(
+                signatureAlgorithm(leaf.getSigAlgName(), keybox.algorithm),
+                keybox.keyPair.getPrivate());
 
             Extension hackedExtension = hackAttestExtension(
                 originalRootOfTrust, vector, encodables, attestationIdOverrides, packages);
@@ -163,6 +166,8 @@ public final class CertificateHacker {
                 if (oidString.equals(CertificateGenerator.ATTESTATION_OID.getId())) {
                     builder.addExtension(hackedExtension);
                 } else if (oidString.equals(Extension.authorityKeyIdentifier.getId())) {
+                    X509CertificateHolder issuerHolder = new X509CertificateHolder(
+                            keybox.certificates.get(0).getEncoded());
                     Extension subjectKeyId = issuerHolder.getExtension(Extension.subjectKeyIdentifier);
                     byte[] issuerKeyId = subjectKeyId != null
                             ? SubjectKeyIdentifier.getInstance(subjectKeyId.getParsedValue()).getKeyIdentifier()
@@ -178,6 +183,7 @@ public final class CertificateHacker {
             }
 
             X509CertificateHolder builtHolder = builder.build(signer);
+            CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
             X509Certificate hackedLeaf = (X509Certificate) certFactory.generateCertificate(
                 new ByteArrayInputStream(builtHolder.getEncoded()));
 
@@ -193,24 +199,21 @@ public final class CertificateHacker {
         }
     }
 
-    private static boolean isSignedByKeybox(Certificate[] chain, X509Certificate leaf,
-            KeyBoxManager.KeyBox keybox) {
-        if (chain.length != keybox.certificates.size() + 1) return false;
-        try {
-            for (int i = 0; i < keybox.certificates.size(); i++) {
-                if (!java.util.Arrays.equals(chain[i + 1].getEncoded(),
-                        keybox.certificates.get(i).getEncoded())) return false;
-            }
-            X509Certificate issuer = (X509Certificate) keybox.certificates.get(0);
-            if (!leaf.getIssuerX500Principal().equals(issuer.getSubjectX500Principal())) return false;
-            leaf.verify(issuer.getPublicKey());
-            return true;
-        } catch (Exception e) {
-            return false;
+    /**
+     * The leaf's own signature algorithm when it fits the keybox key, otherwise the
+     * default for that key. They differ when an EC-only or RSA-only keybox signs the
+     * other algorithm's leaf, and an EC key can't produce an RSA signature.
+     */
+    private static String signatureAlgorithm(String leafSigAlg, String keyboxAlgorithm) {
+        final boolean ec = "EC".equals(keyboxAlgorithm);
+        if (leafSigAlg != null) {
+            final String upper = leafSigAlg.toUpperCase(java.util.Locale.ROOT);
+            if (ec ? upper.contains("ECDSA") : upper.contains("RSA")) return leafSigAlg;
         }
+        return ec ? "SHA256withECDSA" : "SHA256withRSA";
     }
 
-    static ContentSigner createBCSigner(String algorithm, PrivateKey privateKey) throws Exception {
+    private static ContentSigner createBCSigner(String algorithm, PrivateKey privateKey) throws Exception {
         AlgorithmIdentifier sigAlgId = new DefaultSignatureAlgorithmIdentifierFinder().find(algorithm);
         
         if (privateKey instanceof BCECPrivateKey) {
@@ -233,7 +236,11 @@ public final class CertificateHacker {
             return new ECContentSigner(sigAlgId, keyParam);
         } else if (privateKey instanceof RSAPrivateCrtKey) {
             RSAPrivateCrtKey rsaKey = (RSAPrivateCrtKey) privateKey;
-            RSAKeyParameters keyParam = new RSAKeyParameters(true, rsaKey.getModulus(), rsaKey.getPrivateExponent());
+            RSAKeyParameters keyParam = new RSAPrivateCrtKeyParameters(
+                    rsaKey.getModulus(), rsaKey.getPublicExponent(),
+                    rsaKey.getPrivateExponent(), rsaKey.getPrimeP(),
+                    rsaKey.getPrimeQ(), rsaKey.getPrimeExponentP(),
+                    rsaKey.getPrimeExponentQ(), rsaKey.getCrtCoefficient());
             return new RSAContentSigner(sigAlgId, keyParam);
         }
         
@@ -371,21 +378,28 @@ public final class CertificateHacker {
             String[] packages) throws Exception {
 
         byte[] bootKey = rootOfTrustOctet(originalRootOfTrust, 0);
-        if (bootKey == null) bootKey = AttestationUtils.getBootKey();
+        if (AttestationUtils.isNullOrZeroBootKey(bootKey)) {
+            bootKey = AttestationUtils.getBootKey();
+        }
 
-        // Keep the three-element RootOfTrust used by older Keymaster versions.
+        byte[] bootHash = rootOfTrustOctet(originalRootOfTrust, 3);
+        if (AttestationUtils.isNullOrZeroBootHash(bootHash)) {
+            bootHash = AttestationUtils.getBootHash();
+        }
+
+        // Older Keymaster versions encode RootOfTrust without verifiedBootHash.
+        // Keep the original layout instead of unconditionally adding a fourth field.
         boolean hasBootHash = !(originalRootOfTrust instanceof ASN1Sequence)
                 || ((ASN1Sequence) originalRootOfTrust).size() >= 4;
+
         ASN1EncodableVector rot = new ASN1EncodableVector();
         rot.add(new DEROctetString(bootKey));
         rot.add(ASN1Boolean.TRUE);
         rot.add(new ASN1Enumerated(0));
-        if (hasBootHash) {
-            byte[] bootHash = rootOfTrustOctet(originalRootOfTrust, 3);
-            if (bootHash == null) bootHash = AttestationUtils.getBootHash();
-            rot.add(new DEROctetString(bootHash));
-        }
+        if (hasBootHash) rot.add(new DEROctetString(bootHash));
         DERSequence hackedRootOfTrust = new DERSequence(rot);
+
+        final int[] patchLevels = AttestationUtils.getPatchLevels(packages);
 
         // Collect everything by tag so the list is emitted in ascending tag order,
         // like real KeyMint output.
@@ -395,11 +409,11 @@ public final class CertificateHacker {
             ordered.put(t.getTagNo(), t);
         }
         ordered.put(718, new DERTaggedObject(true, 718,
-            new ASN1Integer(AttestationUtils.getVendorPatchLevel(true, packages))));
+            new ASN1Integer(patchLevels[1])));
         ordered.put(719, new DERTaggedObject(true, 719,
-            new ASN1Integer(AttestationUtils.getBootPatchLevel(true, packages))));
+            new ASN1Integer(patchLevels[2])));
         ordered.put(706, new DERTaggedObject(true, 706,
-            new ASN1Integer(AttestationUtils.getPatchLevel(false, packages))));
+            new ASN1Integer(patchLevels[0])));
         ordered.put(705, new DERTaggedObject(true, 705,
             new ASN1Integer(AttestationUtils.getOsVersion())));
         ordered.put(704, new DERTaggedObject(704, hackedRootOfTrust));
@@ -420,19 +434,54 @@ public final class CertificateHacker {
 
         DERSequence hackedEnforced = new DERSequence(orderedVector);
         originalEncodables[7] = hackedEnforced;
+        addMissingSoftwareModuleHash(originalEncodables);
         DERSequence hackedSequence = new DERSequence(originalEncodables);
         DEROctetString hackedOctets = new DEROctetString(hackedSequence);
 
         return new Extension(CertificateGenerator.ATTESTATION_OID, false, hackedOctets);
     }
 
+    private static void addMissingSoftwareModuleHash(ASN1Encodable[] keyDescription)
+            throws Exception {
+        if (keyDescription.length < 8
+                || !(keyDescription[6] instanceof ASN1Sequence)
+                || ASN1Integer.getInstance(keyDescription[0]).getValue().intValue() < 400
+                || ASN1Integer.getInstance(keyDescription[2]).getValue().intValue() < 400) {
+            return;
+        }
+
+        ASN1Sequence sw = (ASN1Sequence) keyDescription[6];
+        java.util.TreeMap<Integer, ASN1Encodable> fields = new java.util.TreeMap<>();
+        for (ASN1Encodable entry : sw) {
+            ASN1TaggedObject tagged = ASN1TaggedObject.getInstance(entry);
+            fields.put(tagged.getTagNo(), tagged);
+        }
+        if (fields.containsKey(724)) {
+            return;
+        }
+
+        byte[] moduleHash = AttestationUtils.getModuleHash();
+        if (moduleHash == null) {
+            return;
+        }
+        fields.put(724, new DERTaggedObject(true, 724,
+                new DEROctetString(moduleHash)));
+        ASN1EncodableVector software = new ASN1EncodableVector();
+        for (ASN1Encodable entry : fields.values()) {
+            software.add(entry);
+        }
+        keyDescription[6] = new DERSequence(software);
+    }
+
     private static byte[] rootOfTrustOctet(ASN1Encodable rootOfTrust, int index) {
         try {
             ASN1Sequence sequence = ASN1Sequence.getInstance(rootOfTrust);
-            if (sequence == null || sequence.size() <= index) return null;
+            if (sequence == null || sequence.size() <= index) {
+                return null;
+            }
             byte[] value = ASN1OctetString.getInstance(sequence.getObjectAt(index)).getOctets();
             return value.length == 0 ? null : value;
-        } catch (IllegalArgumentException e) {
+        } catch (Exception e) {
             return null;
         }
     }

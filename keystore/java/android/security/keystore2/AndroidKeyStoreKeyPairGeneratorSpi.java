@@ -715,28 +715,32 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             boolean needHack = false;
             String[] packages = null;
             final int requesterUid = Process.myUid();
-            // Preserve native handling for ordinary keys, StrongBox, explicit
-            // attestation signers and requests the software generator cannot represent.
+            // Only attested, standard RSA/EC keys are eligible. Ordinary keys,
+            // StrongBox keys, Curve25519 keys (XDH/Ed25519 normalize to EC but a
+            // plain EC software keypair generator cannot express them),
+            // attest-key-rooted chains and internal hardware probes must follow
+            // the stock Keystore path.
             final boolean eligible = mSpec.getAttestationChallenge() != null
                     && !mSpec.isStrongBoxBacked()
-                    && mAttestKeyDescriptor == null
-                    && !isCurve25519(mEcCurveName)
-                    && mSpec.getAttestationIds().length == 0
-                    && !mSpec.isUniqueIdIncluded()
                     && (mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_EC
                         || mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_RSA)
+                    && mAttestKeyDescriptor == null
+                    && !isCurve25519(mEcCurveName)
                     && !"TrickyStoreTeeCheck".equals(mEntryAlias)
                     && !"trickystore_attestation_key".equals(mEntryAlias);
             if (eligible) {
                 try {
                     if (ActivityThread.getPackageManager() != null) {
-                        packages = ActivityThread.getPackageManager().getPackagesForUid(requesterUid);
+                        packages = ActivityThread.getPackageManager()
+                                .getPackagesForUid(requesterUid);
                     }
                     if (packages != null && packages.length > 0) {
                         TrickyStoreService service = TrickyStoreService.getInstance();
                         if (service.hasKeyboxes()) {
                             needGenerate = service.needGenerate(requesterUid, packages);
-                            if (!needGenerate) needHack = service.needHack(requesterUid, packages);
+                            if (!needGenerate) {
+                                needHack = service.needHack(requesterUid, packages);
+                            }
                         }
                     }
                 } catch (Exception e) {
@@ -744,117 +748,14 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                 }
             }
 
-            if (needGenerate) {
-                Log.i(TAG, "Generating software key for " + mEntryAlias);
-                
-                CertificateGenerator.KeyGenParameters params = new CertificateGenerator.KeyGenParameters();
-                params.keySize = mKeySizeBits;
-                params.algorithm = mKeymasterAlgorithm;
-                params.certificateSubject = mSpec.getCertificateSubject();
-                params.certificateSerial = mSpec.getCertificateSerialNumber();
-                params.certificateNotBefore = mSpec.getCertificateNotBefore();
-                params.certificateNotAfter = mSpec.getCertificateNotAfter();
-                params.rsaPublicExponent = mRSAPublicExponent == null ? null : BigInteger.valueOf(mRSAPublicExponent);
-                params.ecCurveName = mEcCurveName;
-                params.attestationChallenge = mSpec.getAttestationChallenge();
-
-                if (mKeymasterPurposes != null) {
-                    for (int p : mKeymasterPurposes) params.purpose.add(p);
-                }
-                if (mKeymasterDigests != null) {
-                    for (int d : mKeymasterDigests) params.digest.add(d);
-                }
-
-                if (mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_EC) {
-                    try {
-                        params.ecCurve = keySizeAndNameToEcCurve(mKeySizeBits, mEcCurveName);
-                    } catch (InvalidAlgorithmParameterException e) {
-                        throw new ProviderException("Unsupported EC curve", e);
-                    }
-                }
-                if (mKeymasterEncryptionPaddings != null) {
-                    for (int p : mKeymasterEncryptionPaddings) params.padding.add(p);
-                }
-                if (mKeymasterSignaturePaddings != null) {
-                    for (int p : mKeymasterSignaturePaddings) {
-                        if (!params.padding.contains(p)) params.padding.add(p);
-                    }
-                }
-                params.packages = packages;
-
-                // KeyMint 3+ reports the MGF1 digests, not the primary digests, under
-                // RSA_OAEP_MGF_DIGEST. mKeymasterMgf1Digests already holds the SHA-1
-                // default when the spec named none, same as the real generation path.
-                if (mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_RSA
-                        && mKeymasterEncryptionPaddings != null
-                        && mKeymasterMgf1Digests != null) {
-                    for (int padding : mKeymasterEncryptionPaddings) {
-                        if (padding == KeymasterDefs.KM_PAD_RSA_OAEP) {
-                            for (int d : mKeymasterMgf1Digests) {
-                                params.rsaOaepMgfDigest.add(d);
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                if (mSpec.isDevicePropertiesAttestationIncluded()) {
-                    try {
-                        final String brand = isPropertyEmptyOrUnknown(Build.BRAND_FOR_ATTESTATION)
-                                ? Build.BRAND : Build.BRAND_FOR_ATTESTATION;
-                        params.brand = brand.getBytes(StandardCharsets.UTF_8);
-
-                        final String device = isPropertyEmptyOrUnknown(Build.DEVICE_FOR_ATTESTATION)
-                                ? Build.DEVICE : Build.DEVICE_FOR_ATTESTATION;
-                        params.device = device.getBytes(StandardCharsets.UTF_8);
-
-                        final String product = isPropertyEmptyOrUnknown(Build.PRODUCT_FOR_ATTESTATION)
-                                ? Build.PRODUCT : Build.PRODUCT_FOR_ATTESTATION;
-                        params.product = product.getBytes(StandardCharsets.UTF_8);
-
-                        final String manufacturer = isPropertyEmptyOrUnknown(Build.MANUFACTURER_FOR_ATTESTATION)
-                                ? Build.MANUFACTURER : Build.MANUFACTURER_FOR_ATTESTATION;
-                        params.manufacturer = manufacturer.getBytes(StandardCharsets.UTF_8);
-
-                        final String model = isPropertyEmptyOrUnknown(Build.MODEL_FOR_ATTESTATION)
-                                ? Build.MODEL : Build.MODEL_FOR_ATTESTATION;
-                        params.model = model.getBytes(StandardCharsets.UTF_8);
-                    } catch (Exception e) {
-                        Log.w(TAG, "Failed to set device properties for attestation", e);
-                    }
-                }
-                
-                KeyPair kp = CertificateGenerator.generateKeyPair(params);
-                if (kp == null) throw new ProviderException("Failed to generate software key");
-                
-                List<Certificate> chain = CertificateGenerator.generateCertificateChain(
-                        kp, params, securityLevel, requesterUid);
-                if (chain == null || chain.isEmpty()) {
-                    throw new ProviderException("Failed to generate software certificate chain");
-                }
-                // Encode before importing, so a failed encoding cannot leave an
-                // imported key with incomplete certificate metadata.
-                byte[] userCert = chain.get(0).getEncoded();
-                byte[] chainBytes = chain.size() > 1
-                        ? encodeCertificateChain(chain.subList(1, chain.size())) : null;
-                byte[] keyBytes = kp.getPrivate().getEncoded();
-                if (keyBytes == null) throw new ProviderException("Private key cannot be imported");
-                try {
-                    metadata = iSecurityLevel.importKey(descriptor, null,
-                            constructKeyImportArguments(), flags, keyBytes);
-                } finally {
-                    Arrays.fill(keyBytes, (byte) 0);
-                }
-                KeyDescriptor importedKey = metadata != null && metadata.key != null
-                        ? metadata.key : descriptor;
-                mKeyStore.updateSubcomponents(importedKey, userCert, chainBytes);
-                metadata = requireUpdatedMetadata(importedKey);
+            if (needGenerate || needHack) {
+                metadata = buildSoftwareAttestedKey(
+                        descriptor, iSecurityLevel, securityLevel, flags,
+                        requesterUid, packages);
             } else {
-                metadata = iSecurityLevel.generateKey(descriptor, mAttestKeyDescriptor,
+                metadata = iSecurityLevel.generateKey(descriptor,
+                        mAttestKeyDescriptor,
                         constructKeyGenerationArguments(), flags, additionalEntropy);
-                if (needHack) {
-                    metadata = maybeUpdateAttestedCertificate(descriptor, metadata, packages);
-                }
             }
 
             AndroidKeyStorePublicKey publicKey =
@@ -893,6 +794,122 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
         }
     }
 
+    private KeyMetadata buildSoftwareAttestedKey(
+            KeyDescriptor descriptor,
+            KeyStoreSecurityLevel iSecurityLevel,
+            int securityLevel,
+            int flags,
+            int requesterUid,
+            String[] packages) throws Exception {
+        Log.i(TAG, "Generating software key for " + mEntryAlias);
+
+        CertificateGenerator.KeyGenParameters params = new CertificateGenerator.KeyGenParameters();
+        params.keySize = mKeySizeBits;
+        params.algorithm = mKeymasterAlgorithm;
+        params.certificateSubject = mSpec.getCertificateSubject();
+        params.certificateSerial = mSpec.getCertificateSerialNumber();
+        params.certificateNotBefore = mSpec.getCertificateNotBefore();
+        params.certificateNotAfter = mSpec.getCertificateNotAfter();
+        params.rsaPublicExponent = mRSAPublicExponent == null
+                ? null : BigInteger.valueOf(mRSAPublicExponent);
+        params.ecCurveName = mEcCurveName;
+        params.attestationChallenge = mSpec.getAttestationChallenge();
+
+        if (mKeymasterPurposes != null) {
+            for (int p : mKeymasterPurposes) params.purpose.add(p);
+        }
+        if (mKeymasterDigests != null) {
+            for (int d : mKeymasterDigests) params.digest.add(d);
+        }
+
+        if (mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_EC) {
+            try {
+                params.ecCurve = keySizeAndNameToEcCurve(mKeySizeBits, mEcCurveName);
+            } catch (InvalidAlgorithmParameterException e) {
+                throw new ProviderException("Unsupported EC curve", e);
+            }
+        }
+        if (mKeymasterEncryptionPaddings != null) {
+            for (int p : mKeymasterEncryptionPaddings) params.padding.add(p);
+        }
+        if (mKeymasterSignaturePaddings != null) {
+            for (int p : mKeymasterSignaturePaddings) {
+                if (!params.padding.contains(p)) params.padding.add(p);
+            }
+        }
+        params.packages = packages;
+
+        // KeyMint 3+ reports the MGF1 digests, not the primary digests, under
+        // RSA_OAEP_MGF_DIGEST. mKeymasterMgf1Digests already holds the SHA-1
+        // default when the spec named none, same as the real generation path.
+        if (mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_RSA
+                && mKeymasterEncryptionPaddings != null
+                && mKeymasterMgf1Digests != null) {
+            for (int padding : mKeymasterEncryptionPaddings) {
+                if (padding == KeymasterDefs.KM_PAD_RSA_OAEP) {
+                    for (int d : mKeymasterMgf1Digests) {
+                        params.rsaOaepMgfDigest.add(d);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (mSpec.isDevicePropertiesAttestationIncluded()) {
+            try {
+                final String brand = isPropertyEmptyOrUnknown(Build.BRAND_FOR_ATTESTATION)
+                        ? Build.BRAND : Build.BRAND_FOR_ATTESTATION;
+                params.brand = brand.getBytes(StandardCharsets.UTF_8);
+
+                final String device = isPropertyEmptyOrUnknown(Build.DEVICE_FOR_ATTESTATION)
+                        ? Build.DEVICE : Build.DEVICE_FOR_ATTESTATION;
+                params.device = device.getBytes(StandardCharsets.UTF_8);
+
+                final String product = isPropertyEmptyOrUnknown(Build.PRODUCT_FOR_ATTESTATION)
+                        ? Build.PRODUCT : Build.PRODUCT_FOR_ATTESTATION;
+                params.product = product.getBytes(StandardCharsets.UTF_8);
+
+                final String manufacturer = isPropertyEmptyOrUnknown(
+                        Build.MANUFACTURER_FOR_ATTESTATION)
+                        ? Build.MANUFACTURER : Build.MANUFACTURER_FOR_ATTESTATION;
+                params.manufacturer = manufacturer.getBytes(StandardCharsets.UTF_8);
+
+                final String model = isPropertyEmptyOrUnknown(Build.MODEL_FOR_ATTESTATION)
+                        ? Build.MODEL : Build.MODEL_FOR_ATTESTATION;
+                params.model = model.getBytes(StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to set device properties for attestation", e);
+            }
+        }
+
+        KeyPair kp = CertificateGenerator.generateKeyPair(params);
+        if (kp == null) throw new ProviderException("Failed to generate software key");
+
+        List<Certificate> chain = CertificateGenerator.generateCertificateChain(
+                kp, params, securityLevel, requesterUid);
+        if (chain == null || chain.isEmpty()) {
+            throw new ProviderException("Failed to generate software certificate chain");
+        }
+        byte[] userCert = chain.get(0).getEncoded();
+        byte[] chainBytes = chain.size() > 1
+                ? encodeCertificateChain(chain.subList(1, chain.size())) : null;
+        byte[] keyBytes = kp.getPrivate().getEncoded();
+        if (keyBytes == null) {
+            throw new ProviderException("Generated private key cannot be imported");
+        }
+        KeyMetadata metadata;
+        try {
+            metadata = iSecurityLevel.importKey(descriptor, null,
+                    constructKeyImportArguments(), flags, keyBytes);
+        } finally {
+            Arrays.fill(keyBytes, (byte) 0);
+        }
+        KeyDescriptor importedKeyDescriptor = metadata != null && metadata.key != null
+                ? metadata.key : descriptor;
+        mKeyStore.updateSubcomponents(importedKeyDescriptor, userCert, chainBytes);
+        return requireUpdatedMetadata(importedKeyDescriptor);
+    }
+
     private byte[] encodeCertificateChain(List<Certificate> chain) 
             throws CertificateEncodingException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -912,52 +929,6 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             throw new ProviderException("Keystore did not return updated key metadata");
         }
         return updated.metadata;
-    }
-
-    /**
-     * Keep the hardware key, but when leaf processing is enabled store its
-     * corresponding certificate metadata. On failure the unmodified hardware
-     * metadata is returned. The calling key must remain usable in either case.
-     */
-    private KeyMetadata maybeUpdateAttestedCertificate(KeyDescriptor descriptor,
-            KeyMetadata metadata, String[] packages) {
-        if (metadata == null || metadata.certificate == null) return metadata;
-        try {
-            CertificateFactory factory = CertificateFactory.getInstance("X.509");
-            List<Certificate> original = new ArrayList<>();
-            original.add(factory.generateCertificate(
-                    new ByteArrayInputStream(metadata.certificate)));
-            if (metadata.certificateChain != null && metadata.certificateChain.length > 0) {
-                original.addAll(factory.generateCertificates(
-                        new ByteArrayInputStream(metadata.certificateChain)));
-            }
-            Certificate[] originalArray = original.toArray(new Certificate[0]);
-            Certificate[] processed = CertificateHacker.hackCertificateChain(
-                    originalArray, packages);
-            if (processed == null || processed.length == 0
-                    || processed == originalArray) {
-                return metadata;
-            }
-            byte[] userCert = processed[0].getEncoded();
-            byte[] ca = processed.length > 1
-                    ? encodeCertificateChain(Arrays.asList(processed)
-                            .subList(1, processed.length)) : null;
-            KeyDescriptor generatedKeyDescriptor = metadata.key != null
-                    ? metadata.key : descriptor;
-            mKeyStore.updateSubcomponents(generatedKeyDescriptor, userCert, ca);
-            return requireUpdatedMetadata(generatedKeyDescriptor);
-        } catch (Exception e) {
-            Log.w(TAG, "Failed to update generated hardware certificate; keeping native key", e);
-            try {
-                // The write can have succeeded before an error reading metadata.
-                // Returning the persisted metadata if possible avoids stale chains.
-                KeyDescriptor generatedKeyDescriptor = metadata.key != null
-                        ? metadata.key : descriptor;
-                return requireUpdatedMetadata(generatedKeyDescriptor);
-            } catch (Exception ignored) {
-                return metadata;
-            }
-        }
     }
 
     @RequiresPermission(value = android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE,

@@ -19,6 +19,7 @@ package android.security.trickystore;
 import android.app.ActivityManager;
 import android.app.IActivityManager;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.JsonReader;
@@ -26,15 +27,15 @@ import android.util.Log;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.security.MessageDigest;
+import java.util.Collections;
+import java.util.HashMap;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
-import java.security.MessageDigest;
 import java.security.spec.ECGenParameterSpec;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -75,9 +76,11 @@ public class TrickyStoreService {
         }
     }
 
+    // Kill switch for the background keybox revocation check (network, 24h cooldown,
+    // logging-only: it never changes keybox state). Evolver runs its own check.
     private static final boolean ENABLE_REVOCATION_CHECK = true;
 
-    // Publish a whole policy snapshot so readers cannot observe a partial refresh.
+    // Publish package policy atomically. An attestation cannot see half a refresh.
     private volatile Map<String, Mode> mPackageModes = Collections.emptyMap();
 
     private volatile Boolean mTeeBroken = null;
@@ -89,6 +92,14 @@ public class TrickyStoreService {
     private volatile long mLastRevocationCheckMs = 0L;
     private volatile long mLastTargetsRefreshMs = 0L;
     private static final long TARGETS_REFRESH_COOLDOWN_MS = 5_000L;
+    // Most attestations call into keybox and patch configuration repeatedly. These
+    // cooldowns avoid synchronous ActivityManager Binder calls on every request.
+    // Explicit refreshKeyBox()/refreshPatchLevel() still bypass the cooldown.
+    private static final long CONFIG_REFRESH_COOLDOWN_MS = 5_000L;
+    private final Object mKeyboxRefreshLock = new Object();
+    private final Object mPatchRefreshLock = new Object();
+    private volatile long mLastKeyboxRefreshElapsedMs = 0L;
+    private volatile long mLastPatchRefreshElapsedMs = 0L;
     private static final long REVOCATION_CHECK_COOLDOWN_MS = 24 * 60 * 60 * 1000L;
     private static final long CACHE_TRUST_WINDOW_MS = 7L * 24 * 60 * 60 * 1000L;
     private static final java.io.File REVOCATION_CACHE_FILE =
@@ -107,6 +118,44 @@ public class TrickyStoreService {
             "io.va.exposed",
             "com.topjohnwu.lsplant.manager",
             "me.weishu.exposed"
+    );
+    // Apps that don't run integrity checks against the bootloader, so targeting them only
+    // adds work: root managers and tools, and a few general Google and utility apps. Taken
+    // from Tricky Addon's "unnecessary apps" list as shipped in Duck-ToolBox. Not applied
+    // to an existing target list, only offered by Evolver's picker and skipped when
+    // AxSpoofManager auto-targets a new install. Xposed managers are in XPOSED_PACKAGES.
+    public static final java.util.Set<String> UNNECESSARY_PACKAGES = java.util.Set.of(
+            // Root managers
+            "com.topjohnwu.magisk",
+            "io.github.vvb2060.magisk",
+            "io.github.huskydg.magisk",
+            "me.weishu.kernelsu",
+            "com.rifsxd.ksunext",
+            "com.sukisu.ultra",
+            "me.bmax.apatch",
+            "me.garfieldhan.apatch.next",
+            // Root related tools
+            "com.termux",
+            "bin.mt.plus",
+            "bin.mt.plus.canary",
+            "xzr.konabess",
+            "io.github.a13e300.ksuwebui",
+            "moe.shizuku.privileged.api",
+            "com.dergoogler.mmrl",
+            "com.dergoogler.mmrl.wx",
+            // General apps
+            "org.swiftapps.swiftbackup",
+            "com.google.android.apps.docs.editors.docs",
+            "com.google.android.apps.docs.editors.sheets",
+            "com.google.android.apps.docs.editors.slides",
+            "com.google.android.keep",
+            "com.google.android.apps.maps",
+            "com.google.earth",
+            "com.google.android.apps.translate",
+            "com.android.chrome",
+            "com.google.android.youtube",
+            "com.google.android.apps.youtube.music",
+            "org.zwanoo.android.speedtest"
     );
     // Default TrickyStore targets, in the same syntax as SPOOF_TRICKYSTORE_TARGET:
     // "pkg" is AUTO, "pkg?" leaf hack, "pkg!" cert generation, "pkg-" skip.
@@ -212,7 +261,7 @@ public class TrickyStoreService {
         }
         String content = fetched.value.trim();
         try {
-            Map<String, Mode> parsed = (content.startsWith("[") || content.startsWith("{"))
+            Map<String, Mode> parsed = content.startsWith("[")
                     ? parseTargetsJson(content) : parseTargetsText(content);
             mPackageModes = Collections.unmodifiableMap(parsed);
             Log.i(TAG, "Updated target policies: " + parsed.size());
@@ -267,29 +316,31 @@ public class TrickyStoreService {
                 if (pkg == null) continue;
                 Mode mode;
                 try {
-                    mode = Mode.valueOf(modeStr.toUpperCase(java.util.Locale.ROOT));
+                    mode = Mode.valueOf(modeStr.toUpperCase());
                 } catch (IllegalArgumentException e) {
                     mode = Mode.AUTO;
                 }
                 if (!pkg.trim().isEmpty()) parsed.put(pkg.trim(), mode);
             }
             reader.endArray();
-            if (reader.peek() != android.util.JsonToken.END_DOCUMENT) {
-                throw new IOException("Trailing target policy data");
-            }
         }
         return parsed;
     }
 
-    public synchronized void refreshKeyBox() {
+    public void refreshKeyBox() {
+        synchronized (mKeyboxRefreshLock) {
+            mLastKeyboxRefreshElapsedMs = SystemClock.elapsedRealtime();
+            refreshKeyBoxLocked();
+        }
+    }
+
+    private void refreshKeyBoxLocked() {
         FetchResult fetched = fetchFromAms(am -> am.getSpoofTrickyStoreKeyBox());
         if (!fetched.success) return;
         String raw = fetched.value;
         if (raw == null || raw.trim().isEmpty()) {
-            if (mKeyBoxManager.hasKeyboxes()) {
-                mKeyBoxManager.clear();
-                AttestationUtils.invalidateFallbackBootState();
-            }
+            // A successful empty response means the config was explicitly deleted.
+            mKeyBoxManager.clear();
             mLastKeyboxFingerprint = null;
             return;
         }
@@ -303,6 +354,14 @@ public class TrickyStoreService {
             return;
         }
         try {
+            if (!isValidKeyboxXml(xml)) {
+                mLastKeyboxFingerprint = null;
+                Log.e(TAG, "Keybox XML failed structural validation (missing keys or identifier)");
+                return;
+            }
+            if (ENABLE_REVOCATION_CHECK) {
+                checkKeyboxRevocation(xml);
+            }
             if (!mKeyBoxManager.parseKeybox(xml)) {
                 // Rejected as incomplete: the previous keyboxes stay loaded. Don't record
                 // this payload as applied, so the next read looks at it again.
@@ -311,10 +370,6 @@ public class TrickyStoreService {
             }
             if (mKeyBoxManager.hasKeyboxes()) {
                 mLastKeyboxFingerprint = fingerprint;
-                // Validators used by Duck RKP must not invalidate active boot state.
-                // Only a successful replacement of this service's keybox does so.
-                AttestationUtils.invalidateFallbackBootState();
-                if (ENABLE_REVOCATION_CHECK) checkKeyboxRevocation(xml);
                 Log.i(TAG, "Keybox updated successfully");
             } else {
                 mLastKeyboxFingerprint = null;
@@ -324,6 +379,42 @@ public class TrickyStoreService {
             mLastKeyboxFingerprint = null;
             Log.e(TAG, "Failed to update keybox", e);
         }
+    }
+
+    // KeyBoxManager accepts algorithm="ec", single quotes and extra attributes, so the
+    // structural pre-check has to as well.
+    private static final java.util.regex.Pattern KEY_ECDSA = java.util.regex.Pattern.compile(
+            "<Key\\s[^>]*?algorithm\\s*=\\s*[\"'](?:ecdsa|ec)[\"']",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+    private static final java.util.regex.Pattern KEY_RSA = java.util.regex.Pattern.compile(
+            "<Key\\s[^>]*?algorithm\\s*=\\s*[\"']rsa[\"']",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    private boolean isValidKeyboxXml(String xml) {
+        String problem = keyboxProblem(xml);
+        if (problem != null) {
+            Log.e(TAG, "Keybox validation failed: " + problem);
+            return false;
+        }
+        if (!KEY_ECDSA.matcher(xml).find()) Log.w(TAG, "Keybox warning: missing ECDSA key block");
+        if (!KEY_RSA.matcher(xml).find())   Log.w(TAG, "Keybox warning: missing RSA key block");
+        return true;
+    }
+
+    /**
+     * Structural check of a keybox document before it is parsed.
+     *
+     * @return null if acceptable, otherwise a short reason
+     */
+    public static String keyboxProblem(String xml) {
+        if (xml == null) return "Keybox is empty";
+        if (!KEY_ECDSA.matcher(xml).find() && !KEY_RSA.matcher(xml).find()) {
+            return "No ECDSA or RSA key block";
+        }
+        if (!xml.contains("<serial>") && !xml.contains("DeviceID")) {
+            return "No serial or DeviceID";
+        }
+        return null;
     }
 
     private static String sha256(String text) {
@@ -336,7 +427,11 @@ public class TrickyStoreService {
         }
     }
 
-    private String decodeKeybox(String payload) {
+    /**
+     * Returns the keybox XML text of a payload that is either the XML itself or its base64
+     * encoding, or null if it is neither.
+     */
+    public static String decodeKeybox(String payload) {
         String trimmed = payload.trim();
         if (trimmed.startsWith("<")) {
             return trimmed;
@@ -352,7 +447,14 @@ public class TrickyStoreService {
         return null;
     }
 
-    public synchronized void refreshPatchLevel() {
+    public void refreshPatchLevel() {
+        synchronized (mPatchRefreshLock) {
+            mLastPatchRefreshElapsedMs = SystemClock.elapsedRealtime();
+            refreshPatchLevelLocked();
+        }
+    }
+
+    private void refreshPatchLevelLocked() {
         FetchResult fetched = fetchFromAms(am -> am.getSpoofTrickyStorePatch());
         if (!fetched.success) return;
         String content = fetched.value;
@@ -406,18 +508,54 @@ public class TrickyStoreService {
         flushPatchSection(next, currentPackage, system, vendor, boot, all);
     }
 
-    private static String resolvePatchTemplate(String value) {
+    // YYYY-MM[-DD] where any field may be the literal YYYY / MM / DD placeholder.
+    private static final java.util.regex.Pattern PATCH_TEMPLATE = java.util.regex.Pattern
+            .compile("^(YYYY|\\d{4})-(MM|\\d{2})(?:-(DD|\\d{2}))?$");
+
+    /**
+     * Resolves the "today" keyword and YYYY/MM/DD placeholders against the current UTC
+     * date. A fixed day is clamped to the length of a placeholder-resolved month. Anything
+     * that isn't a template, including plain dates, is returned unchanged.
+     */
+    public static String resolvePatchTemplate(String value) {
         if (value == null) return null;
-        java.util.regex.Matcher m = java.util.regex.Pattern
-            .compile("^YYYY-MM-(\\d{2})$").matcher(value.trim());
-        if (!m.matches()) return value;
-        String day = m.group(1);
+        String v = value.trim();
         java.util.Calendar cal = java.util.Calendar.getInstance(
             java.util.TimeZone.getTimeZone("UTC"));
-        return String.format(java.util.Locale.US, "%04d-%02d-%s",
-            cal.get(java.util.Calendar.YEAR),
-            cal.get(java.util.Calendar.MONTH) + 1,
-            day);
+        int nowYear = cal.get(java.util.Calendar.YEAR);
+        int nowMonth = cal.get(java.util.Calendar.MONTH) + 1;
+        int nowDay = cal.get(java.util.Calendar.DAY_OF_MONTH);
+        if (v.equalsIgnoreCase("today")) {
+            return String.format(java.util.Locale.US, "%04d-%02d-%02d", nowYear, nowMonth, nowDay);
+        }
+        java.util.regex.Matcher m = PATCH_TEMPLATE.matcher(v);
+        if (!m.matches()) return value;
+        boolean yearTemplate = "YYYY".equals(m.group(1));
+        boolean monthTemplate = "MM".equals(m.group(2));
+        boolean dayTemplate = "DD".equals(m.group(3));
+        if (!yearTemplate && !monthTemplate && !dayTemplate) return value;
+
+        int year = yearTemplate ? nowYear : Integer.parseInt(m.group(1));
+        int month = monthTemplate ? nowMonth : Integer.parseInt(m.group(2));
+        if (m.group(3) == null) {
+            return String.format(java.util.Locale.US, "%04d-%02d", year, month);
+        }
+        int day = dayTemplate ? nowDay : Integer.parseInt(m.group(3));
+        if ((yearTemplate || monthTemplate) && month >= 1 && month <= 12) {
+            day = Math.min(day, java.time.YearMonth.of(year, month).lengthOfMonth());
+        }
+        return String.format(java.util.Locale.US, "%04d-%02d-%02d", year, month, day);
+    }
+
+    /**
+     * Whether [value] is acceptable as a patch level setting: "no", "prop", a date, or a
+     * template that resolves to a date (see {@link #resolvePatchTemplate}).
+     */
+    public static boolean isValidPatchValue(String value) {
+        if (value == null) return false;
+        String v = value.trim();
+        if (v.equalsIgnoreCase("no") || v.equalsIgnoreCase("prop")) return true;
+        return AttestationUtils.isValidPatchLevel(resolvePatchTemplate(v));
     }
 
     private void flushPatchSection(PatchConfigBuilder next,
@@ -476,9 +614,6 @@ public class TrickyStoreService {
                 }
             }
             reader.endObject();
-            if (reader.peek() != android.util.JsonToken.END_DOCUMENT) {
-                throw new IOException("Trailing patch configuration data");
-            }
         }
         flushPatchSection(next, null, system, vendor, boot, all);
     }
@@ -498,11 +633,6 @@ public class TrickyStoreService {
             mTeeCheckedAtMs = System.currentTimeMillis();
             AttestationUtils.setTeeBroken(broken);
         }
-    }
-
-    /** Validates without changing the active service's keyboxes or boot state. */
-    public static boolean isValidKeyboxXml(String xml) {
-        return new KeyBoxManager().parseKeybox(xml);
     }
 
     private void checkKeyboxRevocation(String xml) {
@@ -668,10 +798,9 @@ public class TrickyStoreService {
     public boolean needHack(int callingUid, String[] packages) {
         if (packages == null) return false;
         maybeRefreshTargets();
-        Map<String, Mode> modes = mPackageModes;
         for (String pkg : packages) {
             if (XPOSED_PACKAGES.contains(pkg)) continue;
-            Mode mode = modes.get(pkg);
+            Mode mode = mPackageModes.get(pkg);
             if (mode == Mode.SKIP) continue;
             if (mode == Mode.LEAF_HACK) return true;
             // Only AUTO needs to know the TEE state. Probing it costs a real
@@ -684,10 +813,9 @@ public class TrickyStoreService {
     public boolean needGenerate(int callingUid, String[] packages) {
         if (packages == null) return false;
         maybeRefreshTargets();
-        Map<String, Mode> modes = mPackageModes;
         for (String pkg : packages) {
             if (XPOSED_PACKAGES.contains(pkg)) continue;
-            Mode mode = modes.get(pkg);
+            Mode mode = mPackageModes.get(pkg);
             if (mode == Mode.SKIP) continue;
             if (mode == Mode.GENERATE) return hasKeyboxes();
             if (mode == Mode.AUTO && hasKeyboxes() && isTeeBroken()) return true;
@@ -703,18 +831,50 @@ public class TrickyStoreService {
         }
     }
 
+    private void maybeRefreshKeyBox() {
+        long now = SystemClock.elapsedRealtime();
+        if (mLastKeyboxRefreshElapsedMs != 0L
+                && now - mLastKeyboxRefreshElapsedMs < CONFIG_REFRESH_COOLDOWN_MS) {
+            return;
+        }
+        synchronized (mKeyboxRefreshLock) {
+            now = SystemClock.elapsedRealtime();
+            if (mLastKeyboxRefreshElapsedMs == 0L
+                    || now - mLastKeyboxRefreshElapsedMs >= CONFIG_REFRESH_COOLDOWN_MS) {
+                mLastKeyboxRefreshElapsedMs = now;
+                refreshKeyBoxLocked();
+            }
+        }
+    }
+
+    private void maybeRefreshPatchLevel() {
+        long now = SystemClock.elapsedRealtime();
+        if (mLastPatchRefreshElapsedMs != 0L
+                && now - mLastPatchRefreshElapsedMs < CONFIG_REFRESH_COOLDOWN_MS) {
+            return;
+        }
+        synchronized (mPatchRefreshLock) {
+            now = SystemClock.elapsedRealtime();
+            if (mLastPatchRefreshElapsedMs == 0L
+                    || now - mLastPatchRefreshElapsedMs >= CONFIG_REFRESH_COOLDOWN_MS) {
+                mLastPatchRefreshElapsedMs = now;
+                refreshPatchLevelLocked();
+            }
+        }
+    }
+
     public KeyBoxManager getKeyBoxManager() {
-        refreshKeyBox();
+        maybeRefreshKeyBox();
         return mKeyBoxManager;
     }
 
     public CustomPatchLevel getCustomPatchLevel() {
-        refreshPatchLevel();
+        maybeRefreshPatchLevel();
         return mPatchConfig.global;
     }
 
     public CustomPatchLevel getCustomPatchLevelForPackage(String[] packages) {
-        refreshPatchLevel();
+        maybeRefreshPatchLevel();
         PatchConfig config = mPatchConfig;
         if (packages != null) {
             for (String pkg : packages) {
@@ -746,7 +906,7 @@ public class TrickyStoreService {
     }
 
     public boolean hasKeyboxes() {
-        refreshKeyBox();
+        maybeRefreshKeyBox();
         return mKeyBoxManager.hasKeyboxes();
     }
 
